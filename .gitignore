@@ -1,0 +1,12 @@
+node_modules
+.env
+.env.development
+.env.staging
+.env.production
+npm-debug.log*
+package-lock.json
+yarn.lock
+.DS_Store
+dist
+
+
