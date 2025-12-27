@@ -309,7 +309,7 @@ router.get('/second-screen/:code', async (req, res) => {
         socketUrl: window.location.origin
       };
     </script>
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" integrity="sha384-3Lk1aqLdlZpZ/vIRW2TNxfcV6lrGe55zAjpcz7usEEtVnq1+PAEdM5oe5u0qg4o8" crossorigin="anonymous"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <script>
       (function () {
         const cfg = window.SECOND_SCREEN_CONFIG;
@@ -332,42 +332,78 @@ router.get('/second-screen/:code', async (req, res) => {
           items.forEach((q) => {
             const li = document.createElement('li');
             li.className = 'question-item';
-            li.dataset.id = q._id || q.id;
+            const id = q._id || q.id;
+            li.dataset.id = id;
+            if (q.createdAt) {
+              li.dataset.createdAt = new Date(q.createdAt).getTime();
+            }
             li.innerHTML =
               '<div class="text"></div>' +
               '<div class="meta">' +
               '<div class="status-pill"><span class="dot"></span><span>Approved</span></div>' +
               (q.createdAt
-                ? '<div>' + new Date(q.createdAt).toLocaleTimeString() + '</div>'
+                ? '<div>' + new Date(q.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</div>'
                 : '') +
               '</div>';
-            li.querySelector('.text').textContent = q.text;
+            li.querySelector('.text').textContent = q.text || '';
             questionsList.appendChild(li);
           });
         }
 
         function upsertQuestion(q) {
           const id = q._id || q.id;
-          let existing = questionsList.querySelector('[data-id="' + id + '"]');
-          if (q.status !== 'approved') {
-            if (existing) existing.remove();
+          if (!id) {
+            console.warn('upsertQuestion: missing id', q);
             return;
           }
+          
+          let existing = questionsList.querySelector('[data-id="' + id + '"]');
+          
+          // If question is not approved, remove it from the list
+          if (q.status !== 'approved') {
+            if (existing) {
+              existing.remove();
+            }
+            return;
+          }
+          
+          // If question is approved, add or update it
           if (!existing) {
             existing = document.createElement('li');
             existing.className = 'question-item';
             existing.dataset.id = id;
-            existing.innerHTML =
-              '<div class="text"></div>' +
-              '<div class="meta">' +
-              '<div class="status-pill"><span class="dot"></span><span>Approved</span></div>' +
-              (q.createdAt
-                ? '<div>' + new Date(q.createdAt).toLocaleTimeString() + '</div>'
-                : '') +
-              '</div>';
-            questionsList.appendChild(existing);
+            // Insert in chronological order (oldest first)
+            const allQuestions = Array.from(questionsList.children);
+            const createdAt = q.createdAt ? new Date(q.createdAt).getTime() : Date.now();
+            let inserted = false;
+            for (let i = 0; i < allQuestions.length; i++) {
+              const itemCreatedAt = allQuestions[i].dataset.createdAt ? parseInt(allQuestions[i].dataset.createdAt) : 0;
+              if (createdAt < itemCreatedAt) {
+                questionsList.insertBefore(existing, allQuestions[i]);
+                inserted = true;
+                break;
+              }
+            }
+            if (!inserted) {
+              questionsList.appendChild(existing);
+            }
           }
-          existing.querySelector('.text').textContent = q.text;
+          
+          // Store createdAt for sorting
+          if (q.createdAt) {
+            existing.dataset.createdAt = new Date(q.createdAt).getTime();
+          }
+          
+          // Update question content
+          existing.innerHTML =
+            '<div class="text"></div>' +
+            '<div class="meta">' +
+            '<div class="status-pill"><span class="dot"></span><span>Approved</span></div>' +
+            (q.createdAt
+              ? '<div>' + new Date(q.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '</div>'
+              : '') +
+            '</div>';
+          existing.querySelector('.text').textContent = q.text || '';
         }
 
         function updateSlideView(slide) {
@@ -406,10 +442,101 @@ router.get('/second-screen/:code', async (req, res) => {
           slideSourceLabel.textContent = url;
         }
 
+        // Conference time data
+        const conferenceStart = ${conference.startsAt ? `new Date('${conference.startsAt.toISOString()}')` : 'null'};
+        const conferenceEnd = ${conference.endsAt ? `new Date('${conference.endsAt.toISOString()}')` : 'null'};
+
+        function formatTimeRemaining(ms) {
+          if (ms <= 0) return '0:00:00';
+          const totalSeconds = Math.floor(ms / 1000);
+          const hours = Math.floor(totalSeconds / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+          const seconds = totalSeconds % 60;
+          return hours + ':' + String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+        }
+
+        function formatElapsedTime(ms) {
+          const totalSeconds = Math.floor(ms / 1000);
+          const hours = Math.floor(totalSeconds / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+          const seconds = totalSeconds % 60;
+          if (hours > 0) {
+            return hours + 'ч ' + minutes + 'м ' + seconds + 'с';
+          } else if (minutes > 0) {
+            return minutes + 'м ' + seconds + 'с';
+          } else {
+            return seconds + 'с';
+          }
+        }
+
         function tickClock() {
           const now = new Date();
-          nowLabel.textContent = now.toLocaleTimeString();
+          
+          // Update current time with date
+          const dateStr = now.toLocaleDateString('ru-RU', { 
+            day: '2-digit', 
+            month: '2-digit', 
+            year: 'numeric' 
+          });
+          const timeStr = now.toLocaleTimeString('ru-RU', { 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit' 
+          });
+          nowLabel.textContent = dateStr + ' ' + timeStr;
+
+          // Update time left/elapsed
+          if (timeLeftEl) {
+            let timeText = '';
+            
+            if (conferenceStart && conferenceEnd) {
+              const nowTime = now.getTime();
+              const startTime = conferenceStart.getTime();
+              const endTime = conferenceEnd.getTime();
+              
+              if (nowTime < startTime) {
+                // Conference hasn't started yet
+                const remaining = startTime - nowTime;
+                timeText = '<strong>До начала:</strong> ' + formatTimeRemaining(remaining);
+              } else if (nowTime >= startTime && nowTime < endTime) {
+                // Conference is in progress
+                const elapsed = nowTime - startTime;
+                const remaining = endTime - nowTime;
+                timeText = '<strong>Прошло:</strong> ' + formatElapsedTime(elapsed) + ' · <strong>Осталось:</strong> ' + formatTimeRemaining(remaining);
+              } else {
+                // Conference has ended
+                const elapsed = endTime - startTime;
+                timeText = '<strong>Конференция завершена</strong> (длительность: ' + formatElapsedTime(elapsed) + ')';
+              }
+            } else if (conferenceStart) {
+              const nowTime = now.getTime();
+              const startTime = conferenceStart.getTime();
+              
+              if (nowTime < startTime) {
+                const remaining = startTime - nowTime;
+                timeText = '<strong>До начала:</strong> ' + formatTimeRemaining(remaining);
+              } else {
+                const elapsed = nowTime - startTime;
+                timeText = '<strong>Прошло с начала:</strong> ' + formatElapsedTime(elapsed);
+              }
+            } else if (conferenceEnd) {
+              const nowTime = now.getTime();
+              const endTime = conferenceEnd.getTime();
+              
+              if (nowTime < endTime) {
+                const remaining = endTime - nowTime;
+                timeText = '<strong>До окончания:</strong> ' + formatTimeRemaining(remaining);
+              } else {
+                timeText = '<strong>Конференция завершена</strong>';
+              }
+            } else {
+              timeText = '<strong>Время не установлено</strong>';
+            }
+            
+            timeLeftEl.innerHTML = timeText;
+          }
         }
+        
         setInterval(tickClock, 1000);
         tickClock();
 
@@ -462,15 +589,20 @@ router.get('/second-screen/:code', async (req, res) => {
         socket.on('connect_error', () => setSocketStatus(false));
 
         socket.on('question-created', (payload) => {
-          // Only approved questions are shown via REST; created ones are pending by default.
-          // Here можно расширить, если вы захотите отображать "живую очередь".
+          // New questions are pending by default, so we don't show them until approved
+          // The question-updated event will handle approved questions
+          if (payload && payload.status === 'approved') {
+            upsertQuestion(payload);
+          }
         });
 
         socket.on('question-updated', (payload) => {
+          console.log('Question updated via socket:', payload);
           upsertQuestion(payload);
         });
 
         socket.on('slide-updated', (payload) => {
+          console.log('Slide updated via socket:', payload);
           updateSlideView(payload);
         });
       })();

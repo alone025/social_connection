@@ -54,6 +54,7 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
 
   // Optionally notify second screen / moderators about new question
   emitToConference(conference._id, 'question-created', {
+    _id: question._id,
     id: question._id,
     text: question.text,
     status: question.status,
@@ -128,9 +129,11 @@ async function approveQuestion({ moderatorUser, conferenceCode, questionId }) {
   await question.save();
 
   emitToConference(conference._id, 'question-updated', {
+    _id: question._id,
     id: question._id,
     text: question.text,
     status: question.status,
+    createdAt: question.createdAt,
   });
 
   return { conference, question };
@@ -170,9 +173,11 @@ async function rejectQuestion({ moderatorUser, conferenceCode, questionId }) {
   await question.save();
 
   emitToConference(conference._id, 'question-updated', {
+    _id: question._id,
     id: question._id,
     text: question.text,
     status: question.status,
+    createdAt: question.createdAt,
   });
 
   return { conference, question };
