@@ -53,7 +53,7 @@ async function bootstrap() {
 
   server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
-  });
+  }); 
 
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
