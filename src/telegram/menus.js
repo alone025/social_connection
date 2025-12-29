@@ -311,6 +311,39 @@ function getParticipantSelectionMenu(participants, actionPrefix) {
   return Markup.inlineKeyboard(buttons);
 }
 
+/**
+ * Search filter menu (for filtering participants by role)
+ */
+function getSearchFilterMenu(conferenceCode) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('👥 Все участники', `search:filter:${conferenceCode}:all`)],
+    [Markup.button.callback('🎤 Спикеры', `search:filter:${conferenceCode}:speaker`)],
+    [Markup.button.callback('💰 Инвесторы', `search:filter:${conferenceCode}:investor`)],
+    [Markup.button.callback('👤 Участники', `search:filter:${conferenceCode}:participant`)],
+    [Markup.button.callback('📋 Организаторы', `search:filter:${conferenceCode}:organizer`)],
+    [Markup.button.callback('🔍 Поиск по тексту', `search:text:${conferenceCode}`)],
+    [Markup.button.callback('◀️ Назад', 'menu:find_participants')],
+  ]);
+}
+
+/**
+ * Notification menu for question moderation (shown in admin notifications)
+ */
+function getQuestionNotificationMenu(conferenceCode) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Перейти к модерации', `moderate:conf:${conferenceCode}`)],
+  ]);
+}
+
+/**
+ * Notification menu for poll voting (shown in user notifications)
+ */
+function getPollNotificationMenu(conferenceCode, pollId) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('📊 Проголосовать', `polls:vote:${conferenceCode}:${pollId}`)],
+  ]);
+}
+
 module.exports = {
   getUserRoles,
   getMainMenu,
@@ -329,6 +362,9 @@ module.exports = {
   getQuestionListMenu,
   getPollManagementMenu,
   getParticipantSelectionMenu,
+  getSearchFilterMenu,
+  getQuestionNotificationMenu,
+  getPollNotificationMenu,
   getSecondScreenUrl,
 };
 

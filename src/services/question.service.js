@@ -1,8 +1,17 @@
 const { Conference } = require('../models/conference');
 const { Question } = require('../models/question');
 const { UserProfile } = require('../models/userProfile');
+const { User } = require('../models/user');
 const { ensureUserFromTelegram, userIsMainAdmin } = require('./conference.service');
 const { emitToConference } = require('../lib/realtime');
+
+function parseMainAdminIdsFromEnv() {
+  const raw = process.env.MAIN_ADMIN_TELEGRAM_IDS || '';
+  return raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
 
 async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerProfileId = null }) {
   const { validate, questionSchema } = require('../lib/validation');
@@ -61,6 +70,9 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
     createdAt: question.createdAt,
     targetSpeaker: targetSpeakerProfileId,
   });
+
+  // Notify admins about new question
+  await notifyAdminsAboutQuestion({ question, conference });
 
   return { question, conference, profile };
 }
@@ -300,6 +312,78 @@ async function listSpeakers({ conferenceCode }) {
   }).select('firstName lastName username telegramId');
 
   return { conference, speakers };
+}
+
+/**
+ * Notify all admins (main admins + conference admins) about a new question
+ */
+async function notifyAdminsAboutQuestion({ question, conference }) {
+  try {
+    const { getBot } = require('../telegram/bot');
+    const { getQuestionNotificationMenu } = require('../telegram/menus');
+    const bot = getBot();
+    
+    if (!bot) {
+      console.warn('Bot instance not available, skipping admin notification');
+      return;
+    }
+
+    // Get all main admins
+    const mainAdminIds = parseMainAdminIdsFromEnv();
+    const mainAdmins = await User.find({
+      $or: [
+        { telegramId: { $in: mainAdminIds } },
+        { globalRole: 'main_admin' }
+      ]
+    });
+
+    // Get all conference admins
+    const adminProfiles = await UserProfile.find({
+      _id: { $in: conference.admins },
+      isActive: true,
+    }).populate('conference');
+
+    const adminTelegramIds = new Set();
+
+    // Add main admins
+    mainAdmins.forEach(admin => {
+      if (admin.telegramId) {
+        adminTelegramIds.add(admin.telegramId);
+      }
+    });
+
+    // Add conference admins
+    adminProfiles.forEach(profile => {
+      if (profile.telegramId) {
+        adminTelegramIds.add(profile.telegramId);
+      }
+    });
+
+    // Get author name if available
+    const authorProfile = await UserProfile.findById(question.author);
+    const authorName = authorProfile 
+      ? `${authorProfile.firstName || ''} ${authorProfile.lastName || ''}`.trim() || 'Участник'
+      : 'Участник';
+
+    const notificationText = `🔔 Новый вопрос для модерации\n\n` +
+      `📋 Конференция: ${conference.title}\n` +
+      `👤 От: ${authorName}\n\n` +
+      `❓ Вопрос:\n${question.text}`;
+
+    const menu = getQuestionNotificationMenu(conference.conferenceCode);
+
+    // Send notification to all admins
+    for (const telegramId of adminTelegramIds) {
+      try {
+        await bot.telegram.sendMessage(telegramId, notificationText, menu);
+      } catch (err) {
+        console.error(`Failed to send question notification to ${telegramId}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('Error notifying admins about question:', err);
+    // Don't throw - notification failure shouldn't break question creation
+  }
 }
 
 module.exports = {

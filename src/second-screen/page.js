@@ -286,7 +286,7 @@ router.get('/second-screen/:code', async (req, res) => {
           <div class="slide-wrapper" id="slideWrapper">
             <div class="slide-header">
               <div><span class="dot"></span>Текущий слайд</div>
-              <div style="font-size:10px; color:#9ca3af;" id="slideSourceLabel"></div>
+             
             </div>
             <div class="slide-body empty" id="slideBody">
               <span>Сейчас слайд не выбран. Администратор может задать его командой /set_slide.</span>
@@ -318,7 +318,6 @@ router.get('/second-screen/:code', async (req, res) => {
         const nowLabel = document.getElementById('nowLabel');
         const timeLeftEl = document.getElementById('timeLeft');
         const slideBody = document.getElementById('slideBody');
-        const slideSourceLabel = document.getElementById('slideSourceLabel');
 
         function setSocketStatus(online) {
           socketStatus.className = online ? 'online' : 'offline';
@@ -413,8 +412,8 @@ router.get('/second-screen/:code', async (req, res) => {
           if (!url) {
             slideBody.className = 'slide-body empty';
             slideBody.innerHTML =
-              '<span>Сейчас слайд не выбран. Администратор может задать его командой /set_slide.</span>';
-            slideSourceLabel.textContent = '';
+              '<span>Сейчас слайд не выбран. Администратор может задать его.</span>';
+            
             return;
           }
 
@@ -439,7 +438,6 @@ router.get('/second-screen/:code', async (req, res) => {
             inner.appendChild(iframe);
           }
 
-          slideSourceLabel.textContent = url;
         }
 
         // Conference time data

@@ -55,6 +55,9 @@ const {
   getQuestionListMenu,
   getPollManagementMenu,
   getParticipantSelectionMenu,
+  getSearchFilterMenu,
+  getQuestionNotificationMenu,
+  getPollNotificationMenu,
   getSecondScreenUrl,
 } = require('./menus');
 
@@ -215,18 +218,61 @@ function initBot() {
   bot.action(/^find:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const conferenceCode = ctx.match[1];
-    // Update state, but keep the flow (this is a continuation of find_participants)
-    const currentState = userState.get(ctx.from.id);
-    if (currentState && currentState.flow === 'find_participants') {
-      userState.set(ctx.from.id, { flow: 'find_participants', conferenceCode, step: 'enter_query' });
-    } else {
+    clearUserState(ctx.from.id);
+    // Show filter menu instead of asking for text input
+    await ctx.editMessageText(
+      `🔍 Поиск участников в конференции\n\nВыберите фильтр:`,
+      getSearchFilterMenu(conferenceCode)
+    );
+  });
+
+  // Search filter handlers
+  bot.action(/^search:filter:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    const role = ctx.match[2] === 'all' ? null : ctx.match[2];
+    
+    try {
+      const { profiles } = await searchProfiles({
+        conferenceCode,
+        role,
+        text: null,
+        limit: 20,
+      });
+
       clearUserState(ctx.from.id);
-      userState.set(ctx.from.id, { flow: 'find_participants', conferenceCode, step: 'enter_query' });
+
+      if (!profiles.length) {
+        return ctx.editMessageText(
+          `❌ Участники не найдены.\n\nФильтр: ${role ? role : 'Все участники'}`,
+          getSearchFilterMenu(conferenceCode)
+        );
+      }
+
+      const resultText = profiles.map((p, idx) => {
+        const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
+        const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
+        return `${idx + 1}. ${p.firstName || ''} ${p.lastName || ''}${roles}${interests}`;
+      }).join('\n\n');
+
+      await ctx.editMessageText(
+        `🔍 Найдено участников: ${profiles.length}\n\nФильтр: ${role ? role : 'Все участники'}\n\n${resultText}`,
+        getSearchFilterMenu(conferenceCode)
+      );
+    } catch (err) {
+      console.error('Error in search filter', err);
+      await ctx.editMessageText('❌ Ошибка при поиске.', getSearchFilterMenu(conferenceCode));
     }
-    // Use reply instead of editMessageText for text input flows
+  });
+
+  bot.action(/^search:text:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    clearUserState(ctx.from.id);
+    userState.set(ctx.from.id, { flow: 'search_text', conferenceCode, step: 'enter_text' });
     await ctx.reply(
-      `🔍 Поиск участников в конференции\n\nВведите роль (speaker/investor/participant) или текст для поиска (или оставьте пустым для всех):`,
-      { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'menu:find_participants' }]] } }
+      `🔍 Поиск по тексту\n\nВведите текст для поиска (интересы, предложения, поиск):`,
+      { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `find:conf:${conferenceCode}` }]] } }
     );
   });
 
@@ -333,6 +379,27 @@ function initBot() {
       );
     } catch (err) {
       console.error('Error in vote:select', err);
+      await ctx.editMessageText('❌ Ошибка.', getUserMenu());
+    }
+  });
+
+  // Handler for poll notification button (polls:vote:conferenceCode:pollId)
+  bot.action(/^polls:vote:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    const pollId = ctx.match[2];
+    try {
+      const { Poll } = require('../models/poll');
+      const poll = await Poll.findById(pollId);
+      if (!poll || !poll.isActive) {
+        return ctx.editMessageText('❌ Опрос не найден или завершён.', getUserMenu());
+      }
+      await ctx.editMessageText(
+        `📊 ${poll.question}\n\nВыберите вариант:`,
+        getPollVoteMenu(pollId, poll.options)
+      );
+    } catch (err) {
+      console.error('Error in polls:vote', err);
       await ctx.editMessageText('❌ Ошибка.', getUserMenu());
     }
   });
@@ -1770,26 +1837,14 @@ function initBot() {
       return;
     }
 
-    // Find participants flow
-    if (state && state.flow === 'find_participants' && state.step === 'enter_query') {
+    // Text search flow (for search_text)
+    if (state && state.flow === 'search_text' && state.step === 'enter_text') {
       try {
-        const parts = text.split(' ').filter(Boolean);
-        let role = null;
-        let searchText = null;
-
-        if (parts.length > 0) {
-          const firstPart = parts[0].toLowerCase();
-          if (['speaker', 'investor', 'participant', 'organizer'].includes(firstPart)) {
-            role = firstPart;
-            searchText = parts.slice(1).join(' ');
-          } else {
-            searchText = text;
-          }
-        }
+        const searchText = text.trim();
 
         const { profiles } = await searchProfiles({
           conferenceCode: state.conferenceCode,
-          role,
+          role: null,
           text: searchText,
           limit: 20,
         });
@@ -1797,7 +1852,10 @@ function initBot() {
         clearUserState(ctx.from.id);
 
         if (!profiles.length) {
-          return ctx.reply('❌ Участники не найдены.', await getMainMenu(ctx.from));
+          return ctx.reply(
+            `❌ Участники не найдены по запросу "${searchText}".`,
+            { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
+          );
         }
 
         const resultText = profiles.map((p, idx) => {
@@ -1806,10 +1864,16 @@ function initBot() {
           return `${idx + 1}. ${p.firstName || ''} ${p.lastName || ''}${roles}${interests}`;
         }).join('\n\n');
 
-        await ctx.reply(`🔍 Найдено участников: ${profiles.length}\n\n${resultText}`, await getMainMenu(ctx.from));
+        await ctx.reply(
+          `🔍 Найдено участников: ${profiles.length}\n\nЗапрос: "${searchText}"\n\n${resultText}`,
+          { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
+        );
       } catch (err) {
-        console.error('Error in find_participants flow', err);
-        await ctx.reply('❌ Ошибка при поиске.', await getMainMenu(ctx.from));
+        console.error('Error in search_text flow', err);
+        await ctx.reply(
+          '❌ Ошибка при поиске.',
+          { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
+        );
       }
       return;
     }

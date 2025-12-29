@@ -69,6 +69,9 @@ async function createPoll({ moderatorUser, conferenceCode, payload }) {
     options: poll.options,
   });
 
+  // Notify all users in the conference about the new poll
+  await notifyUsersAboutPoll({ poll, conference });
+
   return { conference, poll };
 }
 
@@ -300,6 +303,57 @@ async function listPollsForManagement({ moderatorUser, conferenceCode }) {
   }).sort({ createdAt: -1 });
 
   return { conference, polls };
+}
+
+/**
+ * Notify all users in the conference about a new poll
+ */
+async function notifyUsersAboutPoll({ poll, conference }) {
+  try {
+    const { getBot } = require('../telegram/bot');
+    const { getPollNotificationMenu } = require('../telegram/menus');
+    const bot = getBot();
+    
+    if (!bot) {
+      console.warn('Bot instance not available, skipping poll notification');
+      return;
+    }
+
+    // Get all active users in the conference
+    const profiles = await UserProfile.find({
+      conference: conference._id,
+      isActive: true,
+      onboardingCompleted: true,
+    });
+
+    const userTelegramIds = new Set();
+    profiles.forEach(profile => {
+      if (profile.telegramId) {
+        userTelegramIds.add(profile.telegramId);
+      }
+    });
+
+    const optionsText = poll.options.map((opt, idx) => `${idx + 1}. ${opt.text}`).join('\n');
+
+    const notificationText = `📊 Новый опрос\n\n` +
+      `📋 Конференция: ${conference.title}\n\n` +
+      `❓ Вопрос:\n${poll.question}\n\n` +
+      `📝 Варианты ответов:\n${optionsText}`;
+
+    const menu = getPollNotificationMenu(conference.conferenceCode, poll._id);
+
+    // Send notification to all users
+    for (const telegramId of userTelegramIds) {
+      try {
+        await bot.telegram.sendMessage(telegramId, notificationText, menu);
+      } catch (err) {
+        console.error(`Failed to send poll notification to ${telegramId}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('Error notifying users about poll:', err);
+    // Don't throw - notification failure shouldn't break poll creation
+  }
 }
 
 module.exports = {
