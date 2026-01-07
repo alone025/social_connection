@@ -1,20 +1,24 @@
 const { Conference } = require('../models/conference');
 const { UserProfile } = require('../models/userProfile');
+const { getConferenceIdByCode } = require('../lib/conference-helper');
 
 /**
  * Basic profile search / matching inside a conference.
  * Supports filters:
  * - role: 'speaker' | 'investor' | 'participant' | 'organizer'
  * - text: free-text match against interests / offerings / lookingFor
+ * 
+ * Note: conferenceCode is for UX only, internally uses conferenceId (ObjectId)
  */
 async function searchProfiles({ conferenceCode, role, text, limit = 20 }) {
-  const conference = await Conference.findOne({ conferenceCode });
-  if (!conference) {
-    throw new Error('CONFERENCE_NOT_FOUND');
-  }
+  // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+
+  // Get conference for return value (only if needed)
+  const conference = await Conference.findById(conferenceId).select('_id conferenceCode title');
 
   const query = {
-    conference: conference._id,
+    conference: conferenceId, // Use ObjectId for all DB queries
     isActive: true,
     onboardingCompleted: true,
   };
@@ -23,6 +27,7 @@ async function searchProfiles({ conferenceCode, role, text, limit = 20 }) {
     query.roles = role;
   }
 
+  // Use indexed query for performance
   const profiles = await UserProfile.find(query).limit(limit);
 
   if (text && text.trim()) {

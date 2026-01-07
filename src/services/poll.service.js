@@ -4,6 +4,7 @@ const { UserProfile } = require('../models/userProfile');
 const { ensureUserFromTelegram, userIsMainAdmin } = require('./conference.service');
 const { emitToConference } = require('../lib/realtime');
 const { validate, pollSchema } = require('../lib/validation');
+const { getConferenceIdByCode } = require('../lib/conference-helper');
 
 /**
  * Check if user is speaker or admin in conference
@@ -33,7 +34,10 @@ async function canManagePolls({ user, conference }) {
  * Create a new poll for a conference (admin or speaker)
  */
 async function createPoll({ moderatorUser, conferenceCode, payload }) {
-  const conference = await Conference.findOne({ conferenceCode });
+  // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+  
+  const conference = await Conference.findById(conferenceId);
   if (!conference) {
     throw new Error('CONFERENCE_NOT_FOUND');
   }
@@ -54,8 +58,9 @@ async function createPoll({ moderatorUser, conferenceCode, payload }) {
     voters: [],
   }));
 
+  // Use conferenceId (ObjectId) for all DB operations
   const poll = new Poll({
-    conference: conference._id,
+    conference: conferenceId,
     question: validated.question,
     options: optionsWithIds,
     isActive: true,
@@ -63,7 +68,8 @@ async function createPoll({ moderatorUser, conferenceCode, payload }) {
 
   await poll.save();
 
-  emitToConference(conference._id, 'poll-created', {
+  // Use conferenceId (ObjectId) for real-time events
+  emitToConference(conferenceId, 'poll-created', {
     id: poll._id,
     question: poll.question,
     options: poll.options,
@@ -108,26 +114,15 @@ async function voteInPoll({ telegramUser, pollId, optionId }) {
     throw new Error('INVALID_OPTION');
   }
 
-  // Check if user already voted in this poll (check all options)
-  let alreadyVoted = false;
-  for (const opt of poll.options) {
-    if (opt.voters.some((v) => v.toString() === profile._id.toString())) {
-      alreadyVoted = true;
-      break;
-    }
-  }
-
-  if (alreadyVoted) {
-    throw new Error('ALREADY_VOTED');
-  }
-
-  // Atomic update: add voter to the specific option using $addToSet
-  // This prevents race conditions and duplicate votes at DB level
+  // ATOMIC VOTING: Use atomic operation to prevent race conditions
+  // Check if user already voted in ANY option of this poll using $nin (not in)
+  // This ensures only one vote per user per poll, even under concurrent load
   const result = await Poll.updateOne(
     {
       _id: pollId,
       'options.id': optionId,
-      'options.voters': { $ne: profile._id }, // Ensure voter is not already in array
+      // Ensure user hasn't voted in ANY option of this poll
+      'options.voters': { $nin: [profile._id] },
     },
     {
       $addToSet: {
@@ -137,7 +132,21 @@ async function voteInPoll({ telegramUser, pollId, optionId }) {
   );
 
   if (result.matchedCount === 0) {
-    // Either poll/option not found, or user already voted (race condition caught)
+    // Check if user already voted (by checking all options)
+    const updatedPoll = await Poll.findById(pollId);
+    let alreadyVoted = false;
+    for (const opt of updatedPoll.options) {
+      if (opt.voters.some((v) => v.toString() === profile._id.toString())) {
+        alreadyVoted = true;
+        break;
+      }
+    }
+    
+    if (alreadyVoted) {
+      throw new Error('ALREADY_VOTED');
+    }
+    
+    // Poll/option not found or other error
     throw new Error('VOTE_FAILED');
   }
 
@@ -157,13 +166,17 @@ async function voteInPoll({ telegramUser, pollId, optionId }) {
  * Get active polls for a conference
  */
 async function getPollsForConference({ conferenceCode }) {
-  const conference = await Conference.findOne({ conferenceCode });
+  // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+  
+  const conference = await Conference.findById(conferenceId);
   if (!conference) {
     throw new Error('CONFERENCE_NOT_FOUND');
   }
 
+  // Use conferenceId (ObjectId) for all DB queries
   const polls = await Poll.find({
-    conference: conference._id,
+    conference: conferenceId,
     isActive: true,
   }).sort({ createdAt: -1 });
 
@@ -298,6 +311,7 @@ async function listPollsForManagement({ moderatorUser, conferenceCode }) {
     throw new Error('ACCESS_DENIED');
   }
 
+  // Use conference._id (ObjectId) for all DB queries
   const polls = await Poll.find({
     conference: conference._id,
   }).sort({ createdAt: -1 });

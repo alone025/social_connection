@@ -27,27 +27,50 @@ const interestsSchema = Joi.array()
       .min(1)
       .max(MAX_INTEREST_LENGTH)
       .pattern(/^[a-zA-Zа-яА-ЯёЁ0-9\s\-_,\.]+$/)
+      .messages({
+        'string.pattern.base': 'Интерес содержит недопустимые символы (разрешены только буквы, цифры, пробелы, дефисы, запятые, точки и подчёркивания)',
+        'string.min': 'Интерес не может быть пустым',
+        'string.max': `Интерес не может быть длиннее ${MAX_INTEREST_LENGTH} символов`,
+      })
   )
   .max(MAX_INTERESTS_COUNT)
   .messages({
-    'array.max': `Максимум ${MAX_INTERESTS_COUNT} интересов`,
-    'string.pattern.base': 'Интерес содержит недопустимые символы',
+    'array.max': `Можно указать максимум ${MAX_INTERESTS_COUNT} интересов`,
+    'array.base': 'Интересы должны быть списком',
   });
 
 const offeringsSchema = Joi.array()
-  .items(Joi.string().trim().min(1).max(MAX_OFFERING_LENGTH))
+  .items(
+    Joi.string()
+      .trim()
+      .min(1)
+      .max(MAX_OFFERING_LENGTH)
+      .messages({
+        'string.min': 'Предложение не может быть пустым',
+        'string.max': `Каждое предложение не может быть длиннее ${MAX_OFFERING_LENGTH} символов`,
+      })
+  )
   .max(MAX_INTERESTS_COUNT)
   .messages({
-    'array.max': `Максимум ${MAX_INTERESTS_COUNT} предложений`,
-    'string.max': `Каждое предложение не может быть длиннее ${MAX_OFFERING_LENGTH} символов`,
+    'array.max': `Можно указать максимум ${MAX_INTERESTS_COUNT} предложений`,
+    'array.base': 'Предложения должны быть списком',
   });
 
 const lookingForSchema = Joi.array()
-  .items(Joi.string().trim().min(1).max(MAX_LOOKING_FOR_LENGTH))
+  .items(
+    Joi.string()
+      .trim()
+      .min(1)
+      .max(MAX_LOOKING_FOR_LENGTH)
+      .messages({
+        'string.min': 'Пункт не может быть пустым',
+        'string.max': `Каждый пункт не может быть длиннее ${MAX_LOOKING_FOR_LENGTH} символов`,
+      })
+  )
   .max(MAX_INTERESTS_COUNT)
   .messages({
-    'array.max': `Максимум ${MAX_INTERESTS_COUNT} пунктов`,
-    'string.max': `Каждый пункт не может быть длиннее ${MAX_LOOKING_FOR_LENGTH} символов`,
+    'array.max': `Можно указать максимум ${MAX_INTERESTS_COUNT} пунктов`,
+    'array.base': 'Пункты должны быть списком',
   });
 
 const userProfileSchema = Joi.object({
@@ -170,7 +193,64 @@ function validate(data, schema) {
   });
 
   if (error) {
-    const messages = error.details.map((detail) => detail.message).join('; ');
+    // Format user-friendly error messages
+    const messages = error.details.map((detail) => {
+      const path = detail.path.join('.');
+      const message = detail.message;
+      
+      // Customize messages for better UX
+      if (path.includes('firstName') || path.includes('lastName')) {
+        if (message.includes('pattern')) {
+          return 'Имя может содержать только буквы, пробелы, дефисы, апострофы и точки';
+        }
+        if (message.includes('min')) {
+          return 'Имя не может быть пустым';
+        }
+        if (message.includes('max')) {
+          return `Имя не может быть длиннее ${MAX_NAME_LENGTH} символов`;
+        }
+      }
+      
+      if (path.includes('interests')) {
+        if (message.includes('max')) {
+          return `Можно указать максимум ${MAX_INTERESTS_COUNT} интересов`;
+        }
+        if (message.includes('pattern')) {
+          return 'Интересы содержат недопустимые символы';
+        }
+      }
+      
+      if (path.includes('offerings') || path.includes('lookingFor')) {
+        if (message.includes('max')) {
+          return `Можно указать максимум ${MAX_INTERESTS_COUNT} пунктов`;
+        }
+      }
+      
+      if (path === 'text' && message.includes('min')) {
+        return `Вопрос должен содержать минимум ${MIN_QUESTION_LENGTH} символов`;
+      }
+      
+      if (path === 'text' && message.includes('max')) {
+        return `Вопрос не может быть длиннее ${MAX_QUESTION_LENGTH} символов`;
+      }
+      
+      if (path === 'question' && message.includes('min')) {
+        return 'Вопрос опроса должен содержать минимум 5 символов';
+      }
+      
+      if (path === 'options') {
+        if (message.includes('min')) {
+          return `Опрос должен содержать минимум ${MIN_OPTIONS_COUNT} варианта ответа`;
+        }
+        if (message.includes('max')) {
+          return `Опрос не может содержать более ${MAX_OPTIONS_COUNT} вариантов ответа`;
+        }
+      }
+      
+      // Return original message if no customization
+      return message;
+    }).join('; ');
+    
     const validationError = new Error(`VALIDATION_ERROR: ${messages}`);
     validationError.details = error.details;
     throw validationError;

@@ -1,4 +1,8 @@
-require('dotenv').config();
+// Load environment variables
+// Support environment-specific files: .env.development, .env.staging, .env.production
+const nodeEnv = process.env.NODE_ENV || 'development';
+require('dotenv').config({ path: `.env.${nodeEnv}` });
+require('dotenv').config(); // Fallback to .env if env-specific file doesn't exist
 
 const http = require('http');
 const express = require('express');
@@ -6,18 +10,69 @@ const morgan = require('morgan');
 const cors = require('cors');
 const { Server } = require('socket.io');
 
+const { validateEnvironment } = require('./lib/env-validation');
+
+/**
+ * Schedule job to check for meetings that are starting and notify participants
+ */
+function startMeetingNotificationScheduler() {
+  const { notifyMeetingStarting } = require('./services/meeting.service');
+  const { Meeting } = require('./models/meeting');
+
+  // Check every minute for meetings that are starting
+  setInterval(async () => {
+    try {
+      const now = new Date();
+      const oneMinuteAgo = new Date(now.getTime() - 1 * 60 * 1000);
+      const oneMinuteFromNow = new Date(now.getTime() + 1 * 60 * 1000);
+
+      // Find meetings that are starting now (within 1 minute window to avoid duplicates)
+      const startingMeetings = await Meeting.find({
+        status: 'accepted',
+        proposedTime: {
+          $gte: oneMinuteAgo,
+          $lte: oneMinuteFromNow,
+        },
+        // Add a flag to track if notification was sent (optional - for now we rely on time window)
+      })
+        .populate('requester', 'firstName lastName telegramId')
+        .populate('recipient', 'firstName lastName telegramId');
+
+      for (const meeting of startingMeetings) {
+        // Notify if meeting time is within 1 minute of now (just started or about to start)
+        const timeUntilMeeting = meeting.proposedTime.getTime() - now.getTime();
+        if (Math.abs(timeUntilMeeting) <= 1 * 60 * 1000) {
+          await notifyMeetingStarting({ meeting });
+        }
+      }
+    } catch (err) {
+      console.error('Error in meeting notification scheduler:', err);
+    }
+  }, 60 * 1000); // Check every minute
+
+  console.log('✅ Meeting notification scheduler started');
+}
 const { initBot } = require('./telegram/bot');
 const { connectMongo } = require('./lib/mongo');
 const { secondScreenRouter } = require('./second-screen/routes');
 const { initSecondScreenSocket } = require('./second-screen/socket');
 const { requireSecondScreenKey } = require('./second-screen/ss-middleware');
 const { secondScreenPageRouter } = require('./second-screen/page');
+const { initMeetingChatSocket } = require('./meeting-chat/socket');
+const { meetingChatPageRouter } = require('./meeting-chat/page');
+const { organizerDashboardPageRouter } = require('./organizer-dashboard/page');
 const { setIO } = require('./lib/realtime');
 
 const PORT = process.env.PORT || 3000;
 
 async function bootstrap() {
+  // Validate environment variables before starting
+  validateEnvironment();
+
   await connectMongo();
+
+  // Start meeting notification scheduler
+  startMeetingNotificationScheduler();
 
   const app = express();
   app.use(cors());
@@ -31,6 +86,12 @@ async function bootstrap() {
 
   // Second screen HTML (protected via ?key=...)
   app.use(secondScreenPageRouter);
+
+  // Meeting chat HTML (protected via ?token=...)
+  app.use(meetingChatPageRouter);
+
+  // Organizer dashboard HTML (protected via ?key=...&telegramId=...)
+  app.use(organizerDashboardPageRouter);
 
   // Protect all second-screen REST API endpoints
   app.use('/conference', requireSecondScreenKey, secondScreenRouter);
@@ -46,6 +107,7 @@ async function bootstrap() {
   });
 
   initSecondScreenSocket(io);
+  initMeetingChatSocket(io);
   setIO(io);
 
   // Telegram bot

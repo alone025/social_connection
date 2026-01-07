@@ -19,8 +19,9 @@ const pollSchema = new Schema(
   { timestamps: true }
 );
 
-// Performance indexes per spec
-pollSchema.index({ conference: 1, isActive: 1 });
+// Performance indexes for 500-2000 users
+pollSchema.index({ conference: 1, isActive: 1 }); // For finding active polls in conference
+pollSchema.index({ conference: 1, createdAt: -1 }); // For sorting polls by creation date
 
 const Poll = mongoose.model('Poll', pollSchema);
 

@@ -16,6 +16,18 @@ function getSecondScreenUrl(conferenceCode) {
 }
 
 /**
+ * Generate organizer dashboard URL for a conference
+ */
+function getOrganizerDashboardUrl(conferenceCode, telegramId) {
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
+  const apiKey = process.env.SECOND_SCREEN_API_KEY;
+  if (!apiKey || !telegramId) {
+    return null; // Can't generate URL without API key or telegram ID
+  }
+  return `${baseUrl}/organizer-dashboard/${conferenceCode}?key=${encodeURIComponent(apiKey)}&telegramId=${telegramId}`;
+}
+
+/**
  * Get user's effective roles (global + per-conference)
  */
 async function getUserRoles(telegramUser) {
@@ -70,6 +82,7 @@ async function getMainMenu(telegramUser) {
   buttons.push([Markup.button.callback('➕ Присоединиться к конференции', 'menu:join_conference')]);
   buttons.push([Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')]);
   buttons.push([Markup.button.callback('🔍 Найти участников', 'menu:find_participants')]);
+  buttons.push([Markup.button.callback('🤝 Встречи 1:1', 'menu:meetings')]);
   buttons.push([Markup.button.callback('❓ Задать вопрос', 'menu:ask_question')]);
   buttons.push([Markup.button.callback('📊 Опросы', 'menu:polls')]);
 
@@ -100,6 +113,7 @@ function getUserMenu() {
     [Markup.button.callback('➕ Присоединиться', 'menu:join_conference')],
     [Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')],
     [Markup.button.callback('🔍 Найти участников', 'menu:find_participants')],
+    [Markup.button.callback('🤝 Встречи 1:1', 'menu:meetings')],
     [Markup.button.callback('❓ Задать вопрос', 'menu:ask_question')],
     [Markup.button.callback('📊 Опросы', 'menu:polls')],
     [Markup.button.callback('◀️ Главное меню', 'menu:main')],
@@ -128,6 +142,7 @@ function getConferenceAdminMenu() {
     [Markup.button.callback('❓ Модерация вопросов', 'menu:admin_moderate_questions')],
     [Markup.button.callback('📊 Управление опросами', 'menu:admin_polls')],
     [Markup.button.callback('🖼️ Управление слайдами', 'menu:admin_slides')],
+    [Markup.button.callback('📊 Отчёт организатора', 'menu:admin_report')],
     [Markup.button.callback('◀️ Главное меню', 'menu:main')],
   ]);
 }
@@ -240,6 +255,7 @@ function getConferenceManagementMenu(conferenceCode) {
       Markup.button.callback('🖼️ Слайды', `admin:slides:${conferenceCode}`),
       Markup.button.callback('👥 Участники', `admin:participants:${conferenceCode}`)
     ],
+    [Markup.button.callback('📊 Отчёт организатора', `report:conf:${conferenceCode}`)],
   ];
 
   // Add second screen button if URL can be generated
@@ -344,6 +360,89 @@ function getPollNotificationMenu(conferenceCode, pollId) {
   ]);
 }
 
+/**
+ * Meeting management menu
+ */
+function getMeetingMenu(conferenceCode) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('➕ Запросить встречу', `meeting:request:${conferenceCode}`)],
+    [Markup.button.callback('📋 Мои встречи', `meeting:list:${conferenceCode}`)],
+    [Markup.button.callback('⏰ Доступные слоты', `meeting:slots:${conferenceCode}`)],
+    [Markup.button.callback('◀️ Назад', 'menu:main')],
+  ]);
+}
+
+/**
+ * Meeting list menu
+ */
+function getMeetingListMenu(meetings, conferenceCode, userTelegramId) {
+  const buttons = meetings.slice(0, 10).map((m) => {
+    const isRequester = m.requester.telegramId === userTelegramId;
+    const otherPerson = isRequester 
+      ? `${m.recipient.firstName} ${m.recipient.lastName || ''}`.trim()
+      : `${m.requester.firstName} ${m.requester.lastName || ''}`.trim();
+    const statusEmoji = {
+      pending: '⏳',
+      accepted: '✅',
+      rejected: '❌',
+      cancelled: '🚫',
+      completed: '✅',
+    }[m.status] || '❓';
+    return [Markup.button.callback(
+      `${statusEmoji} ${otherPerson} - ${new Date(m.proposedTime).toLocaleString('ru-RU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+      `meeting:details:${m._id}:${conferenceCode}`
+    )];
+  });
+  buttons.push([Markup.button.callback('◀️ Назад', `meeting:menu:${conferenceCode}`)]);
+  return Markup.inlineKeyboard(buttons);
+}
+
+/**
+ * Meeting details menu
+ */
+function getMeetingDetailsMenu(meeting, conferenceCode, userTelegramId, chatUrl = null) {
+  const buttons = [];
+  const now = new Date();
+  const meetingTime = new Date(meeting.proposedTime);
+  const meetingEndTime = new Date(meetingTime.getTime() + meeting.durationMinutes * 60 * 1000);
+
+  if (meeting.status === 'pending') {
+    const isRecipient = meeting.recipient.telegramId === userTelegramId;
+    if (isRecipient) {
+      // User is recipient
+      buttons.push([Markup.button.callback('✅ Принять', `meeting:accept:${meeting._id}`)]);
+      buttons.push([Markup.button.callback('❌ Отклонить', `meeting:reject:${meeting._id}`)]);
+    }
+    buttons.push([Markup.button.callback('🚫 Отменить', `meeting:cancel:${meeting._id}`)]);
+  } else if (meeting.status === 'accepted') {
+    // Show chat button if meeting is active (now is between meeting start and end)
+    if (chatUrl && now >= meetingTime && now < meetingEndTime) {
+      buttons.push([Markup.button.url('💬 Открыть чат', chatUrl)]);
+    }
+    if (now >= meetingTime && now < meetingEndTime) {
+      buttons.push([Markup.button.callback('✅ Отметить как завершённую', `meeting:complete:${meeting._id}:${conferenceCode}`)]);
+    } else if (now < meetingTime) {
+      buttons.push([Markup.button.callback('🚫 Отменить', `meeting:cancel:${meeting._id}`)]);
+    }
+  }
+  buttons.push([Markup.button.callback('◀️ Назад', `meeting:list:${conferenceCode}`)]);
+  return Markup.inlineKeyboard(buttons);
+}
+
+/**
+ * Participant selection menu for meeting request
+ */
+function getMeetingParticipantMenu(participants, conferenceCode) {
+  const buttons = participants.slice(0, 20).map((p) => [
+    Markup.button.callback(
+      `${p.firstName} ${p.lastName || ''}${p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : ''}`.trim(),
+      `meeting:select_participant:${conferenceCode}:${p._id}`
+    ),
+  ]);
+  buttons.push([Markup.button.callback('◀️ Назад', `meeting:menu:${conferenceCode}`)]);
+  return Markup.inlineKeyboard(buttons);
+}
+
 module.exports = {
   getUserRoles,
   getMainMenu,
@@ -366,5 +465,10 @@ module.exports = {
   getQuestionNotificationMenu,
   getPollNotificationMenu,
   getSecondScreenUrl,
+  getOrganizerDashboardUrl,
+  getMeetingMenu,
+  getMeetingListMenu,
+  getMeetingDetailsMenu,
+  getMeetingParticipantMenu,
 };
 

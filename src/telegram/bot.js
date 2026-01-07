@@ -59,6 +59,10 @@ const {
   getQuestionNotificationMenu,
   getPollNotificationMenu,
   getSecondScreenUrl,
+  getMeetingMenu,
+  getMeetingListMenu,
+  getMeetingDetailsMenu,
+  getMeetingParticipantMenu,
 } = require('./menus');
 
 // Simple in-memory onboarding state per Telegram user
@@ -189,10 +193,93 @@ function initBot() {
     await ctx.answerCbQuery();
     clearUserState(ctx.from.id); // Clear ALL previous state (both userState and onboardingState)
     onboardingState.set(ctx.from.id, { step: 1, data: {} });
-    await ctx.editMessageText(
-      '👤 Заполнение профиля\n\nШаг 1/5: Введите ваше имя и фамилию (например: Иван Иванов):',
+    await ctx.reply(
+      '👤 Заполнение профиля\n\n' +
+      '📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n' +
+      'Шаг 1/6: Введите ваше имя и фамилию (например: Иван Иванов):',
       { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
     );
+  });
+
+  // Onboarding role selection handler
+  bot.action(/^onboarding:role:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const role = ctx.match[1];
+    const onboarding = onboardingState.get(ctx.from.id);
+    
+    if (!onboarding || onboarding.step !== 5) {
+      return ctx.reply('❌ Неверный шаг онбординга. Начните заново.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
+    }
+
+    if (role !== 'skip') {
+      if (!onboarding.data.roles) {
+        onboarding.data.roles = [];
+      }
+      if (!onboarding.data.roles.includes(role)) {
+        onboarding.data.roles.push(role);
+      }
+    }
+
+    onboarding.step = 6;
+    onboardingState.set(ctx.from.id, onboarding);
+
+    // Show list of conferences user is already in
+    const user = await ensureUserFromTelegram(ctx.from);
+    const conferences = await listConferencesForUser(user);
+    
+    if (!conferences.length) {
+      await ctx.editMessageText(
+        '❌ Вы не участвуете ни в одной конференции.\n\n' +
+        'Сначала присоединитесь к конференции через меню "➕ Присоединиться".',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
+      );
+      clearUserState(ctx.from.id);
+      return;
+    }
+
+    await ctx.editMessageText(
+      '✅ Отлично!\n\n' +
+      'Шаг 6/6: Выбери конференцию для завершения профиля:',
+      getConferenceSelectionMenu(conferences, 'onboarding:select_conf')
+    );
+  });
+
+  bot.action(/^onboarding:select_conf:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    const onboarding = onboardingState.get(ctx.from.id);
+    
+    if (!onboarding || onboarding.step !== 6) {
+      return ctx.answerCbQuery('Онбординг не активен или неверный шаг.');
+    }
+
+    try {
+      const { Conference } = require('../models/conference');
+      const { getConferenceIdByCode } = require('../lib/conference-helper');
+      const conferenceId = await getConferenceIdByCode(conferenceCode);
+      const conference = await Conference.findById(conferenceId);
+      
+      if (!conference) {
+        return ctx.editMessageText('❌ Конференция не найдена.', await getMainMenu(ctx.from));
+      }
+
+      await upsertProfileForConference({
+        telegramId: String(ctx.from.id),
+        conferenceId: conference._id,
+        data: onboarding.data,
+      });
+
+      clearUserState(ctx.from.id);
+
+      await ctx.editMessageText(
+        `✅ Профиль для конференции "${conference.title}" заполнен!\n\nТеперь тебе будет проще находить подходящих людей для нетворкинга.`,
+        await getMainMenu(ctx.from)
+      );
+    } catch (err) {
+      console.error('Error in onboarding:select_conf', err);
+      await ctx.editMessageText('❌ Ошибка при завершении профиля.', await getMainMenu(ctx.from));
+      clearUserState(ctx.from.id);
+    }
   });
 
   bot.action('menu:find_participants', async (ctx) => {
@@ -249,16 +336,53 @@ function initBot() {
         );
       }
 
-      const resultText = profiles.map((p, idx) => {
+      const searcher = await ensureUserFromTelegram(ctx.from);
+      const { UserProfile } = require('../models/userProfile');
+      const { getConferenceIdByCode } = require('../lib/conference-helper');
+      const conferenceId = await getConferenceIdByCode(conferenceCode);
+      const searcherProfile = await UserProfile.findOne({
+        telegramId: searcher.telegramId,
+        conference: conferenceId,
+        isActive: true,
+      });
+
+      const resultText = [];
+      const profilesWithoutUsername = [];
+
+      for (const p of profiles) {
         const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
         const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
-        return `${idx + 1}. ${p.firstName || ''} ${p.lastName || ''}${roles}${interests}`;
-      }).join('\n\n');
+        const username = p.username ? `\n  @${p.username}` : '';
+        resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
+        
+        // If no username, add to list for notification
+        if (!p.username && p.telegramId !== searcher.telegramId) {
+          profilesWithoutUsername.push(p);
+        }
+      }
 
       await ctx.editMessageText(
-        `🔍 Найдено участников: ${profiles.length}\n\nФильтр: ${role ? role : 'Все участники'}\n\n${resultText}`,
+        `🔍 Найдено участников: ${profiles.length}\n\nФильтр: ${role ? role : 'Все участники'}\n\n${resultText.join('\n\n')}`,
         getSearchFilterMenu(conferenceCode)
       );
+
+      // Send notifications to users without username
+      if (profilesWithoutUsername.length > 0 && searcherProfile) {
+        const { getBot } = require('../telegram/bot');
+        const bot = getBot();
+        const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
+        const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
+        
+        for (const profile of profilesWithoutUsername) {
+          try {
+            const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
+              `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
+            await bot.telegram.sendMessage(profile.telegramId, notificationText);
+          } catch (err) {
+            console.error(`Error sending notification to ${profile.telegramId}:`, err);
+          }
+        }
+      }
     } catch (err) {
       console.error('Error in search filter', err);
       await ctx.editMessageText('❌ Ошибка при поиске.', getSearchFilterMenu(conferenceCode));
@@ -420,12 +544,8 @@ function initBot() {
         getUserMenu()
       );
     } catch (err) {
-      console.error('Error in vote:poll', err);
-      let errorMsg = '❌ Не удалось проголосовать.';
-      if (err.message === 'ALREADY_VOTED' || err.message === 'VOTE_FAILED') {
-        errorMsg = '❌ Вы уже проголосовали в этом опросе.';
-      }
-      await ctx.editMessageText(errorMsg, getUserMenu());
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getUserMenu());
     }
   });
 
@@ -525,7 +645,7 @@ function initBot() {
 
   bot.action(/^admin:polls:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when navigating to polls list
+    clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     try {
       const user = await ensureUserFromTelegram(ctx.from);
@@ -534,9 +654,12 @@ function initBot() {
         conferenceCode,
       });
 
-      if (!polls.length) {
+      const { formatPollsList } = require('../services/handler.service');
+      const formatted = formatPollsList(polls, conferenceCode);
+
+      if (!formatted.hasPolls) {
         return ctx.editMessageText(
-          '📊 Нет опросов. Создайте новый опрос.',
+          formatted.text,
           Markup.inlineKeyboard([
             [{ text: '➕ Создать опрос', callback_data: `admin:create_poll:${conferenceCode}` }],
             [{ text: '◀️ Назад', callback_data: 'menu:admin_polls' }],
@@ -544,29 +667,44 @@ function initBot() {
         );
       }
 
-      const buttons = polls.map((p) => [
-        { text: `${p.isActive ? '✅' : '⏸️'} ${p.question}`, callback_data: `admin:poll:${p._id}:${conferenceCode}` }
-      ]);
-      buttons.push([{ text: '➕ Создать опрос', callback_data: `admin:create_poll:${conferenceCode}` }]);
-      buttons.push([{ text: '◀️ Назад', callback_data: 'menu:admin_polls' }]);
+      formatted.buttons.push([{ text: '➕ Создать опрос', callback_data: `admin:create_poll:${conferenceCode}` }]);
+      formatted.buttons.push([{ text: '◀️ Назад', callback_data: 'menu:admin_polls' }]);
 
-      await ctx.editMessageText(
-        `📊 Опросы (${polls.length})\n\nВыберите опрос для управления:`,
-        { reply_markup: { inline_keyboard: buttons } }
-      );
+      await ctx.editMessageText(formatted.text, { reply_markup: { inline_keyboard: formatted.buttons } });
     } catch (err) {
-      console.error('Error in admin:polls', err);
-      await ctx.editMessageText('❌ Ошибка.', getConferenceAdminMenu());
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getConferenceAdminMenu());
     }
   });
 
   bot.action(/^admin:poll:(.+):(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const [, pollId, conferenceCode] = ctx.match;
-    await ctx.editMessageText(
-      `📊 Управление опросом\n\nВыберите действие:`,
-      getPollManagementMenu(pollId, conferenceCode)
-    );
+    try {
+      const { Poll } = require('../models/poll');
+      const poll = await Poll.findById(pollId);
+      if (!poll) {
+        return ctx.editMessageText('❌ Опрос не найден.', getConferenceAdminMenu());
+      }
+      
+      const statusText = poll.isActive ? '✅ Активен' : '⏸️ Деактивирован';
+      const optionsText = poll.options.map((opt, idx) => 
+        `${idx + 1}. ${opt.text} (${opt.voters.length} голосов)`
+      ).join('\n');
+      
+      await ctx.editMessageText(
+        `📊 Управление опросом\n\n` +
+        `❓ Вопрос: ${poll.question}\n` +
+        `📊 Статус: ${statusText}\n\n` +
+        `📝 Варианты ответов:\n${optionsText}\n\n` +
+        `Выберите действие:`,
+        getPollManagementMenu(pollId, conferenceCode)
+      );
+    } catch (err) {
+      console.error('Error in admin:poll', err);
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getConferenceAdminMenu());
+    }
   });
 
   bot.action(/^poll:deactivate:(.+)$/, async (ctx) => {
@@ -718,26 +856,56 @@ function initBot() {
         conferenceCode,
       });
 
-      if (!questions.length) {
-        return ctx.editMessageText(
-          '✅ Нет вопросов на модерации.',
-          getConferenceAdminMenu()
-        );
+      const { formatQuestionsList } = require('../services/handler.service');
+      const formatted = formatQuestionsList(questions, conferenceCode);
+
+      if (!formatted.hasQuestions) {
+        return ctx.editMessageText(formatted.text, getConferenceManagementMenu(conferenceCode));
       }
 
-      const text = questions.map((q, idx) => 
-        `${idx + 1}. ${q.text}\n   ID: ${q._id}`
-      ).join('\n\n');
-
-      const buttons = questions.map((q) => [
-        { text: `❓ ${q.text.substring(0, 30)}...`, callback_data: `moderate:question:${conferenceCode}:${q._id}` }
-      ]);
-      buttons.push([{ text: '◀️ Назад', callback_data: 'menu:admin_moderate_questions' }]);
-
-      await ctx.editMessageText(`❓ Вопросы на модерации:\n\n${text}`, { reply_markup: { inline_keyboard: buttons } });
+      formatted.buttons.push([{ text: '◀️ Назад', callback_data: `admin:conf:${conferenceCode}` }]);
+      await ctx.editMessageText(formatted.text, { reply_markup: { inline_keyboard: formatted.buttons } });
     } catch (err) {
       console.error('Error in moderate:conf', err);
-      await ctx.editMessageText('❌ Ошибка.', getConferenceAdminMenu());
+      let errorMsg = '❌ Ошибка при загрузке вопросов.';
+      if (err.message === 'ACCESS_DENIED') {
+        errorMsg = '❌ У вас нет прав для модерации вопросов в этой конференции.\n\nВы должны быть администратором конференции.';
+      } else if (err.message === 'CONFERENCE_NOT_FOUND') {
+        errorMsg = '❌ Конференция не найдена.';
+      }
+      await ctx.editMessageText(errorMsg, getConferenceAdminMenu());
+    }
+  });
+
+  // Handler for moderation button in conference management menu
+  bot.action(/^admin:moderate:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    try {
+      const user = await ensureUserFromTelegram(ctx.from);
+      const { questions } = await listQuestionsForModeration({
+        moderatorUser: user,
+        conferenceCode,
+      });
+
+      const { formatQuestionsList } = require('../services/handler.service');
+      const formatted = formatQuestionsList(questions, conferenceCode);
+
+      if (!formatted.hasQuestions) {
+        return ctx.editMessageText(formatted.text, getConferenceManagementMenu(conferenceCode));
+      }
+
+      formatted.buttons.push([{ text: '◀️ Назад', callback_data: `admin:conf:${conferenceCode}` }]);
+      await ctx.editMessageText(formatted.text, { reply_markup: { inline_keyboard: formatted.buttons } });
+    } catch (err) {
+      console.error('Error in admin:moderate', err);
+      let errorMsg = '❌ Ошибка при загрузке вопросов.';
+      if (err.message === 'ACCESS_DENIED') {
+        errorMsg = '❌ У вас нет прав для модерации вопросов в этой конференции.\n\nВы должны быть администратором конференции.';
+      } else if (err.message === 'CONFERENCE_NOT_FOUND') {
+        errorMsg = '❌ Конференция не найдена.';
+      }
+      await ctx.editMessageText(errorMsg, getConferenceManagementMenu(conferenceCode));
     }
   });
 
@@ -1163,7 +1331,9 @@ function initBot() {
     clearUserState(ctx.from.id); // Clear ALL previous state
     onboardingState.set(ctx.from.id, { step: 1, data: {} });
     await ctx.reply(
-      '👤 Заполнение профиля\n\nШаг 1/5: Введите ваше имя и фамилию (например: Иван Иванов):',
+      '👤 Заполнение профиля\n\n' +
+      '📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n' +
+      'Шаг 1/6: Введите ваше имя и фамилию (например: Иван Иванов):',
       { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
     );
   });
@@ -1630,6 +1800,352 @@ function initBot() {
     );
   });
 
+  // ========== MEETINGS (1:1 TIME SLOTS) ==========
+  
+  bot.action('menu:meetings', async (ctx) => {
+    await ctx.answerCbQuery();
+    clearUserState(ctx.from.id);
+    const user = await ensureUserFromTelegram(ctx.from);
+    const conferences = await listConferencesForUser(user);
+    
+    if (!conferences.length) {
+      return ctx.editMessageText('❌ Сначала присоединитесь к конференции.', getUserMenu());
+    }
+
+    await ctx.editMessageText(
+      '🤝 Встречи 1:1\n\nВыберите конференцию:',
+      getConferenceSelectionMenu(conferences, 'meeting:menu')
+    );
+  });
+
+  bot.action(/^meeting:menu:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    await ctx.editMessageText(
+      `🤝 Встречи 1:1\n\nКонференция: ${conferenceCode}\n\nВыберите действие:`,
+      getMeetingMenu(conferenceCode)
+    );
+  });
+
+  bot.action(/^meeting:request:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    try {
+      const { searchProfiles } = require('../services/matching.service');
+      const { profiles } = await searchProfiles({ conferenceCode, role: null, text: null, limit: 50 });
+      const user = await ensureUserFromTelegram(ctx.from);
+      const { UserProfile } = require('../models/userProfile');
+      const { getConferenceIdByCode } = require('../lib/conference-helper');
+      const conferenceId = await getConferenceIdByCode(conferenceCode);
+      const myProfile = await UserProfile.findOne({ telegramId: user.telegramId, conference: conferenceId });
+      const otherProfiles = profiles.filter((p) => p._id.toString() !== myProfile._id.toString());
+      
+      if (!otherProfiles.length) {
+        return ctx.editMessageText('❌ Нет других участников для встречи.', getMeetingMenu(conferenceCode));
+      }
+
+      await ctx.editMessageText(
+        '🤝 Запросить встречу\n\nВыберите участника:',
+        getMeetingParticipantMenu(otherProfiles, conferenceCode)
+      );
+    } catch (err) {
+      console.error('Error in meeting:request', err);
+      await ctx.editMessageText('❌ Ошибка.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:select_participant:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    clearUserState(ctx.from.id);
+    const [, conferenceCode, recipientProfileId] = ctx.match;
+    userState.set(ctx.from.id, { flow: 'request_meeting', conferenceCode, recipientProfileId, step: 'enter_time' });
+    await ctx.reply(
+      '🤝 Запрос встречи\n\nВведите дату и время встречи в формате: ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 25.12.2024 14:30',
+      { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${conferenceCode}` }]] } }
+    );
+  });
+
+  bot.action(/^meeting:list:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    try {
+      const { listMeetings } = require('../services/meeting.service');
+      const { meetings } = await listMeetings({ telegramUser: ctx.from, conferenceCode });
+      
+      if (!meetings.length) {
+        return ctx.editMessageText('📋 У вас нет встреч в этой конференции.', getMeetingMenu(conferenceCode));
+      }
+
+      const user = await ensureUserFromTelegram(ctx.from);
+      await ctx.editMessageText(
+        `📋 Мои встречи (${meetings.length})\n\nВыберите встречу:`,
+        getMeetingListMenu(meetings, conferenceCode, user.telegramId)
+      );
+    } catch (err) {
+      console.error('Error in meeting:list', err);
+      await ctx.editMessageText('❌ Ошибка.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:details:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [, meetingId, conferenceCode] = ctx.match;
+    try {
+      const { Meeting } = require('../models/meeting');
+      const meeting = await Meeting.findById(meetingId).populate('requester recipient');
+      if (!meeting) {
+        return ctx.editMessageText('❌ Встреча не найдена.', getMeetingMenu(conferenceCode));
+      }
+
+      const user = await ensureUserFromTelegram(ctx.from);
+      const isRequester = meeting.requester.telegramId === user.telegramId;
+      const isRecipient = meeting.recipient.telegramId === user.telegramId;
+      const otherPerson = isRequester ? meeting.recipient : meeting.requester;
+      
+      const statusText = {
+        pending: '⏳ Ожидает ответа',
+        accepted: '✅ Принята',
+        rejected: '❌ Отклонена',
+        cancelled: '🚫 Отменена',
+        completed: '✅ Завершена',
+      }[meeting.status] || meeting.status;
+
+      // Get chat URL if meeting is active
+      let chatUrl = null;
+      const now = new Date();
+      const meetingTime = new Date(meeting.proposedTime);
+      const meetingEndTime = new Date(meetingTime.getTime() + meeting.durationMinutes * 60 * 1000);
+      
+      if (meeting.status === 'accepted' && now >= meetingTime && now < meetingEndTime) {
+        try {
+          const { getOrCreateChatToken, getChatUrl } = require('../services/meetingChat.service');
+          const tokenDoc = await getOrCreateChatToken({ meetingId: meeting._id });
+          const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
+          chatUrl = getChatUrl({ meetingId: meeting._id.toString(), token: tokenDoc.token, baseUrl }) + `&telegramId=${user.telegramId}`;
+        } catch (err) {
+          console.error('Error getting chat token for meeting details:', err);
+        }
+      }
+
+      const text = `🤝 Детали встречи\n\n` +
+        `С кем: ${otherPerson.firstName} ${otherPerson.lastName || ''}\n` +
+        `Время: ${new Date(meeting.proposedTime).toLocaleString('ru-RU')}\n` +
+        `Длительность: ${meeting.durationMinutes} минут\n` +
+        `Статус: ${statusText}\n` +
+        (meeting.message ? `Сообщение: ${meeting.message}\n` : '');
+
+      await ctx.editMessageText(text, getMeetingDetailsMenu(meeting, conferenceCode, user.telegramId, chatUrl));
+    } catch (err) {
+      console.error('Error in meeting:details', err);
+      await ctx.editMessageText('❌ Ошибка.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:accept:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const meetingId = ctx.match[1];
+    try {
+      const { acceptMeeting } = require('../services/meeting.service');
+      const { meeting } = await acceptMeeting({ telegramUser: ctx.from, meetingId });
+      const { Conference } = require('../models/conference');
+      const conference = await Conference.findById(meeting.conference);
+      await ctx.editMessageText(
+        '✅ Встреча принята!',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `meeting:list:${conference.conferenceCode}` }]] } }
+      );
+    } catch (err) {
+      console.error('Error in meeting:accept', err);
+      let errorMsg = '❌ Ошибка при принятии встречи.';
+      if (err.message === 'TIME_CONFLICT') {
+        errorMsg = '❌ У вас уже есть встреча в это время.';
+      }
+      await ctx.editMessageText(errorMsg, getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:reject:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const meetingId = ctx.match[1];
+    try {
+      const { rejectMeeting } = require('../services/meeting.service');
+      const { meeting } = await rejectMeeting({ telegramUser: ctx.from, meetingId });
+      const { Conference } = require('../models/conference');
+      const conference = await Conference.findById(meeting.conference);
+      await ctx.editMessageText(
+        '❌ Встреча отклонена.',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `meeting:list:${conference.conferenceCode}` }]] } }
+      );
+    } catch (err) {
+      console.error('Error in meeting:reject', err);
+      await ctx.editMessageText('❌ Ошибка при отклонении встречи.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:cancel:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const meetingId = ctx.match[1];
+    try {
+      const { cancelMeeting } = require('../services/meeting.service');
+      const { meeting } = await cancelMeeting({ telegramUser: ctx.from, meetingId });
+      const { Conference } = require('../models/conference');
+      const conference = await Conference.findById(meeting.conference);
+      await ctx.editMessageText(
+        '🚫 Встреча отменена.',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `meeting:list:${conference.conferenceCode}` }]] } }
+      );
+    } catch (err) {
+      console.error('Error in meeting:cancel', err);
+      await ctx.editMessageText('❌ Ошибка при отмене встречи.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:slots:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    try {
+      const { getAvailableTimeSlots } = require('../services/meeting.service');
+      // Get slots for today and tomorrow
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const todaySlots = await getAvailableTimeSlots({ telegramUser: ctx.from, conferenceCode, date: today });
+      const tomorrowSlots = await getAvailableTimeSlots({ telegramUser: ctx.from, conferenceCode, date: tomorrow });
+
+      let text = '⏰ Доступные временные слоты\n\n';
+      
+      if (todaySlots.slots.length === 0 && tomorrowSlots.slots.length === 0) {
+        text += '❌ Нет доступных слотов на сегодня и завтра.\n\n';
+        text += `📅 У вас запланировано встреч:\n`;
+        text += `Сегодня: ${todaySlots.meetings.length}\n`;
+        text += `Завтра: ${tomorrowSlots.meetings.length}`;
+      } else {
+        if (todaySlots.slots.length > 0) {
+          text += `📅 Сегодня (${today.toLocaleDateString('ru-RU')}):\n`;
+          todaySlots.slots.slice(0, 10).forEach((slot) => {
+            text += `  • ${slot.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}\n`;
+          });
+          if (todaySlots.slots.length > 10) {
+            text += `  ... и ещё ${todaySlots.slots.length - 10} слотов\n`;
+          }
+          text += '\n';
+        }
+
+        if (tomorrowSlots.slots.length > 0) {
+          text += `📅 Завтра (${tomorrow.toLocaleDateString('ru-RU')}):\n`;
+          tomorrowSlots.slots.slice(0, 10).forEach((slot) => {
+            text += `  • ${slot.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}\n`;
+          });
+          if (tomorrowSlots.slots.length > 10) {
+            text += `  ... и ещё ${tomorrowSlots.slots.length - 10} слотов\n`;
+          }
+        }
+      }
+
+      await ctx.editMessageText(
+        text,
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `meeting:menu:${conferenceCode}` }]] } }
+      );
+    } catch (err) {
+      console.error('Error in meeting:slots', err);
+      await ctx.editMessageText('❌ Ошибка при получении слотов.', getUserMenu());
+    }
+  });
+
+  bot.action(/^meeting:complete:(.+):(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [, meetingId, conferenceCode] = ctx.match;
+    try {
+      const { Meeting } = require('../models/meeting');
+      const { UserProfile } = require('../models/userProfile');
+      const meeting = await Meeting.findById(meetingId).populate('requester recipient');
+      if (!meeting) {
+        return ctx.editMessageText('❌ Встреча не найдена.', getMeetingMenu(conferenceCode));
+      }
+
+      const user = await ensureUserFromTelegram(ctx.from);
+      const isRequester = meeting.requester.telegramId === user.telegramId;
+      const isRecipient = meeting.recipient.telegramId === user.telegramId;
+
+      if (!isRequester && !isRecipient) {
+        return ctx.editMessageText('❌ Вы не участник этой встречи.', getMeetingMenu(conferenceCode));
+      }
+
+      if (meeting.status !== 'accepted') {
+        return ctx.editMessageText('❌ Можно отметить только принятые встречи.', getMeetingMenu(conferenceCode));
+      }
+
+      meeting.status = 'completed';
+      meeting.updatedAt = new Date();
+      await meeting.save();
+
+      await ctx.editMessageText(
+        '✅ Встреча отмечена как завершённая!',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `meeting:list:${conferenceCode}` }]] } }
+      );
+    } catch (err) {
+      console.error('Error in meeting:complete', err);
+      await ctx.editMessageText('❌ Ошибка при отметке встречи.', getUserMenu());
+    }
+  });
+
+  // ========== ORGANIZER REPORTS ==========
+  
+  bot.action('menu:admin_report', async (ctx) => {
+    await ctx.answerCbQuery();
+    clearUserState(ctx.from.id);
+    const user = await ensureUserFromTelegram(ctx.from);
+    const conferences = await listConferencesForUser(user);
+    
+    if (!conferences.length) {
+      return ctx.editMessageText('❌ У вас нет конференций.', getConferenceAdminMenu());
+    }
+
+    await ctx.editMessageText(
+      '📊 Отчёт организатора\n\nВыберите конференцию:',
+      getConferenceSelectionMenu(conferences, 'report:conf')
+    );
+  });
+
+  bot.action(/^report:conf:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const conferenceCode = ctx.match[1];
+    try {
+      const { generateOrganizerReport, formatReportAsText } = require('../services/report.service');
+      const { getOrganizerDashboardUrl } = require('./menus');
+      const report = await generateOrganizerReport({ telegramUser: ctx.from, conferenceCode });
+      const text = formatReportAsText(report);
+      
+      // Create buttons with dashboard link
+      const buttons = [];
+      const dashboardUrl = getOrganizerDashboardUrl(conferenceCode, ctx.from.id);
+      if (dashboardUrl) {
+        buttons.push([Markup.button.url('📊 Открыть Dashboard', dashboardUrl)]);
+      }
+      buttons.push([Markup.button.callback('◀️ Назад', 'menu:admin_report')]);
+      
+      try {
+        await ctx.editMessageText(
+          text,
+          { reply_markup: { inline_keyboard: buttons } }
+        );
+      } catch (editErr) {
+        // Handle "message is not modified" error - this is not critical
+        if (editErr.response && editErr.response.error_code === 400 && 
+            editErr.response.description && editErr.response.description.includes('message is not modified')) {
+          // Message is already up to date, just answer the callback query
+          return;
+        }
+        throw editErr; // Re-throw if it's a different error
+      }
+    } catch (err) {
+      console.error('Error in report:conf', err);
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getConferenceAdminMenu());
+    }
+  });
+
   // ========== TEXT HANDLERS (for flows) ==========
   
   bot.on('text', async (ctx) => {
@@ -1690,9 +2206,10 @@ function initBot() {
           onboarding.step = 2;
 
           await ctx.reply(
-            'Шаг 2 из 5.\n' +
-              'Напиши свои интересы через запятую (например: AI, Web3, Product).\n' +
-              'Если не хочешь указывать — напиши "-".'
+            '✅ Отлично!\n\n' +
+            'Шаг 2/6: Напиши свои интересы через запятую (например: AI, Web3, Product).\n' +
+            '💡 Это поможет другим участникам найти тебя по интересам.\n' +
+            'Если не хочешь указывать — напиши "-".'
           );
           return;
         }
@@ -1707,16 +2224,23 @@ function initBot() {
           }
 
           if (interests.length) {
-            validate({ interests }, userProfileSchema);
-            onboarding.data.interests = interests;
+            try {
+              validate({ interests }, userProfileSchema);
+              onboarding.data.interests = interests;
+            } catch (validationErr) {
+              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации интересов';
+              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
+              return;
+            }
           }
 
           onboarding.step = 3;
           await ctx.reply(
-            'Шаг 3 из 5.\n' +
-              'Что ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\n' +
-              'Например: консалтинг по маркетингу, инвестиции, партнёрства.\n' +
-              'Если хочешь пропустить — напиши "-".'
+            '✅ Отлично!\n\n' +
+            'Шаг 3/6: Что ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\n' +
+            'Например: консалтинг по маркетингу, инвестиции, партнёрства.\n' +
+            '💡 Это поможет людям понять, чем ты можешь быть полезен.\n' +
+            'Если хочешь пропустить — напиши "-".'
           );
           return;
         }
@@ -1731,16 +2255,23 @@ function initBot() {
           }
 
           if (offerings.length) {
-            validate({ offerings }, userProfileSchema);
-            onboarding.data.offerings = offerings;
+            try {
+              validate({ offerings }, userProfileSchema);
+              onboarding.data.offerings = offerings;
+            } catch (validationErr) {
+              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации предложений';
+              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
+              return;
+            }
           }
 
           onboarding.step = 4;
           await ctx.reply(
-            'Шаг 4 из 5.\n' +
-              'Что ты ищешь на конференции? Напиши 1–3 пункта через запятую.\n' +
-              'Например: партнёры, ментор, инвестор.\n' +
-              'Если хочешь пропустить — напиши "-".'
+            '✅ Отлично!\n\n' +
+            'Шаг 4/6: Что ты ищешь на конференции? Напиши 1–3 пункта через запятую.\n' +
+            'Например: партнёры, ментор, инвестор.\n' +
+            '💡 Это поможет найти людей, которые могут помочь тебе.\n' +
+            'Если хочешь пропустить — напиши "-".'
           );
           return;
         }
@@ -1755,42 +2286,56 @@ function initBot() {
           }
 
           if (lookingFor.length) {
-            validate({ lookingFor }, userProfileSchema);
-            onboarding.data.lookingFor = lookingFor;
+            try {
+              validate({ lookingFor }, userProfileSchema);
+              onboarding.data.lookingFor = lookingFor;
+            } catch (validationErr) {
+              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации пунктов поиска';
+              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
+              return;
+            }
           }
 
           onboarding.step = 5;
           await ctx.reply(
-            'Шаг 5 из 5.\n' +
-              'Введи код конференции, к которой хочешь присоединиться и привязать профиль.\n' +
-              'Например: conf-123.'
+            '✅ Отлично!\n\n' +
+            'Шаг 5/6: Выбери свою роль на конференции.\n' +
+            '💡 Это поможет другим участникам найти тебя по роли.\n' +
+            '⚠️ Роль "Спикер" назначается только администратором конференции.\n\n' +
+            'Выбери роль:',
+            Markup.inlineKeyboard([
+              [{ text: '💰 Инвестор', callback_data: 'onboarding:role:investor' }],
+              [{ text: '👤 Участник', callback_data: 'onboarding:role:participant' }],
+              [{ text: '📋 Организатор', callback_data: 'onboarding:role:organizer' }],
+              [{ text: '⏭️ Пропустить', callback_data: 'onboarding:role:skip' }],
+            ])
           );
           return;
         }
 
-        if (onboarding.step === 5) {
-          const code = text.trim();
-          if (!code) {
-            await ctx.reply('Пожалуйста, введи код конференции.');
+        if (onboarding.step === 6) {
+          // Show list of conferences user is already in
+          const user = await ensureUserFromTelegram(ctx.from);
+          const conferences = await listConferencesForUser(user);
+          
+          if (!conferences.length) {
+            await ctx.reply(
+              '❌ Вы не участвуете ни в одной конференции.\n\n' +
+              'Сначала присоединитесь к конференции через меню "➕ Присоединиться".',
+              await getMainMenu(ctx.from)
+            );
+            clearUserState(ctx.from.id);
             return;
           }
 
-          const { conference, profile } = await joinConference({
-            telegramUser: ctx.from,
-            code,
-          });
-
-          await upsertProfileForConference({
-            telegramId: String(ctx.from.id),
-            conferenceId: conference._id,
-            data: onboarding.data,
-          });
-
-          clearUserState(ctx.from.id);
-
+          // Store onboarding data temporarily and show conference selection
+          onboarding.step = 7; // New step for conference selection
+          onboardingState.set(ctx.from.id, onboarding);
+          
           await ctx.reply(
-            `✅ Профиль для конференции "${conference.title}" заполнен!\n\nТеперь тебе будет проще находить подходящих людей для нетворкинга.`,
-            await getMainMenu(ctx.from)
+            '✅ Отлично!\n\n' +
+            'Шаг 6/6: Выбери конференцию для завершения профиля:',
+            getConferenceSelectionMenu(conferences, 'onboarding:select_conf')
           );
           return;
         }
@@ -1858,16 +2403,51 @@ function initBot() {
           );
         }
 
-        const resultText = profiles.map((p, idx) => {
+        const searcher = await ensureUserFromTelegram(ctx.from);
+        const { getConferenceIdByCode } = require('../lib/conference-helper');
+        const conferenceId = await getConferenceIdByCode(state.conferenceCode);
+        const searcherProfile = await UserProfile.findOne({
+          telegramId: searcher.telegramId,
+          conference: conferenceId,
+          isActive: true,
+        });
+
+        const resultText = [];
+        const profilesWithoutUsername = [];
+
+        for (const p of profiles) {
           const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
           const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
-          return `${idx + 1}. ${p.firstName || ''} ${p.lastName || ''}${roles}${interests}`;
-        }).join('\n\n');
+          const username = p.username ? `\n  @${p.username}` : '';
+          resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
+          
+          // If no username, add to list for notification
+          if (!p.username && p.telegramId !== searcher.telegramId) {
+            profilesWithoutUsername.push(p);
+          }
+        }
 
         await ctx.reply(
-          `🔍 Найдено участников: ${profiles.length}\n\nЗапрос: "${searchText}"\n\n${resultText}`,
+          `🔍 Найдено участников: ${profiles.length}\n\nЗапрос: "${searchText}"\n\n${resultText.join('\n\n')}`,
           { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
         );
+
+        // Send notifications to users without username
+        if (profilesWithoutUsername.length > 0 && searcherProfile) {
+          const bot = getBot();
+          const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
+          const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
+          
+          for (const profile of profilesWithoutUsername) {
+            try {
+              const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
+                `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
+              await bot.telegram.sendMessage(profile.telegramId, notificationText);
+            } catch (err) {
+              console.error(`Error sending notification to ${profile.telegramId}:`, err);
+            }
+          }
+        }
       } catch (err) {
         console.error('Error in search_text flow', err);
         await ctx.reply(
@@ -2001,6 +2581,10 @@ function initBot() {
           await ctx.reply('❌ Нужно минимум 2 варианта ответа.\n\nОтправь "отмена" для выхода.');
           return;
         }
+        if (options.length > 10) {
+          await ctx.reply('❌ Максимум 10 вариантов ответа.\n\nОтправь "отмена" для выхода.');
+          return;
+        }
         const { poll } = await createPoll({
           moderatorUser: user,
           conferenceCode: state.conferenceCode,
@@ -2016,7 +2600,11 @@ function initBot() {
         );
       } catch (err) {
         console.error('Error in create_poll flow', err);
-        await ctx.reply('❌ Ошибка при создании опроса.');
+        let errorMsg = '❌ Ошибка при создании опроса.';
+        if (err.message && err.message.startsWith('VALIDATION_ERROR:')) {
+          errorMsg = `❌ ${err.message.replace('VALIDATION_ERROR: ', '')}`;
+        }
+        await ctx.reply(errorMsg + '\n\nОтправь "отмена" для выхода.');
       }
       return;
     }
@@ -2117,6 +2705,53 @@ function initBot() {
       } catch (err) {
         console.error('Error in set_slide flow', err);
         await ctx.reply('❌ Ошибка при установке слайда.\n\nОтправь "отмена" для выхода.');
+      }
+      return;
+    }
+
+    // Request meeting flow - enter time
+    if (state && state.flow === 'request_meeting' && state.step === 'enter_time') {
+      try {
+        // Parse date and time: DD.MM.YYYY HH:MM
+        const match = text.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+        if (!match) {
+          await ctx.reply('❌ Неверный формат. Используйте: ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 25.12.2024 14:30\n\nОтправь "отмена" для выхода.');
+          return;
+        }
+
+        const [, day, month, year, hour, minute] = match;
+        const proposedTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
+
+        if (isNaN(proposedTime.getTime())) {
+          await ctx.reply('❌ Неверная дата или время.\n\nОтправь "отмена" для выхода.');
+          return;
+        }
+
+        const { requestMeeting } = require('../services/meeting.service');
+        const { meeting } = await requestMeeting({
+          telegramUser: ctx.from,
+          conferenceCode: state.conferenceCode,
+          recipientProfileId: state.recipientProfileId,
+          proposedTime,
+          durationMinutes: 30,
+        });
+
+        clearUserState(ctx.from.id);
+        await ctx.reply(
+          `✅ Запрос на встречу отправлен!\n\nВремя: ${proposedTime.toLocaleString('ru-RU')}\nДлительность: 30 минут`,
+          await getMainMenu(ctx.from)
+        );
+      } catch (err) {
+        console.error('Error in request_meeting flow', err);
+        let errorMsg = '❌ Ошибка при создании запроса на встречу.';
+        if (err.message === 'TIME_CONFLICT') {
+          errorMsg = '❌ У вас или у получателя уже есть встреча в это время.';
+        } else if (err.message === 'INVALID_TIME_PAST') {
+          errorMsg = '❌ Нельзя запланировать встречу в прошлом.';
+        } else if (err.message === 'RECIPIENT_NOT_FOUND') {
+          errorMsg = '❌ Получатель не найден.';
+        }
+        await ctx.reply(errorMsg + '\n\nОтправь "отмена" для выхода.');
       }
       return;
     }

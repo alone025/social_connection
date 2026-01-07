@@ -11,7 +11,6 @@ const questionSchema = new Schema(
       type: String,
       enum: ['pending', 'approved', 'rejected'],
       default: 'pending',
-      index: true,
     },
     isAnswered: { type: Boolean, default: false },
     answer: { type: String }, // Answer text from speaker
@@ -22,8 +21,12 @@ const questionSchema = new Schema(
   { timestamps: true }
 );
 
-// Performance indexes per spec
-questionSchema.index({ conference: 1, isAnswered: 1 });
+// Performance indexes for 500-2000 users
+questionSchema.index({ conference: 1, status: 1 }); // For filtering by status (pending/approved/rejected)
+questionSchema.index({ conference: 1, isAnswered: 1 }); // For finding unanswered questions
+questionSchema.index({ conference: 1, status: 1, createdAt: 1 }); // For sorting approved questions
+questionSchema.index({ targetSpeaker: 1, status: 1 }); // For finding questions for specific speaker
+questionSchema.index({ author: 1 }); // For finding questions by author
 
 const Question = mongoose.model('Question', questionSchema);
 

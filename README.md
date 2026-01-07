@@ -8,37 +8,97 @@ Node.js + Telegram bot + MongoDB + Socket.IO second screen for conferences and c
 - Docker & docker-compose (for quick deploy)
 - MongoDB ≥ 5 (if running without Docker)
 
-### Environment variables
+### Environment Configuration
 
-Set these variables (locally via your shell or a `.env` file that is **not committed**):
+#### Quick Setup
 
-- `TELEGRAM_BOT_TOKEN` — Telegram bot token
-- `MONGODB_URI` — MongoDB connection string
-- `SECOND_SCREEN_API_KEY` — secret key for second screen REST + Socket.IO
-- `MAIN_ADMIN_TELEGRAM_IDS` — comma-separated list of Telegram IDs for main admins
-- `PORT` — (optional) HTTP port, default `3000`
-- `BASE_URL` or `SERVER_URL` — (optional) Base URL for second screen links in bot, default `http://localhost:3000`
+1. **Copy the example environment file:**
+   ```bash
+   cp .env.example .env
+   ```
 
-For `docker-compose`, you can put them into a `.env` file near `docker-compose.yml`.
+2. **Edit `.env` and fill in your values:**
+   - `TELEGRAM_BOT_TOKEN` — Get from [@BotFather](https://t.me/BotFather) on Telegram
+   - `MONGODB_URI` — MongoDB connection string
+   - `SECOND_SCREEN_API_KEY` — Generate a secure random string (e.g., `openssl rand -hex 32`)
+   - `MAIN_ADMIN_TELEGRAM_IDS` — Your Telegram user ID(s), comma-separated (get from [@userinfobot](https://t.me/userinfobot))
+
+#### Environment Variables
+
+**Required:**
+- `TELEGRAM_BOT_TOKEN` — Telegram bot token from @BotFather
+- `MONGODB_URI` — MongoDB connection string (format: `mongodb://[user:pass@]host[:port][/database]`)
+- `SECOND_SCREEN_API_KEY` — Secret key for protecting second screen API endpoints (min 16 chars recommended)
+
+**Optional:**
+- `MAIN_ADMIN_TELEGRAM_IDS` — Comma-separated Telegram user IDs for main admins
+- `PORT` — HTTP server port (default: `3000`)
+- `BASE_URL` or `SERVER_URL` — Base URL for second screen links (default: `http://localhost:3000`)
+- `NODE_ENV` — Environment mode: `development`, `staging`, or `production` (default: `development`)
+
+#### Environment-Specific Configuration
+
+The application supports environment-specific configuration files:
+
+- `.env.development` — For local development
+- `.env.staging` — For staging environment
+- `.env.production` — For production
+
+The application will automatically load `.env.<NODE_ENV>` first, then fall back to `.env` if the environment-specific file doesn't exist.
+
+**Example:**
+```bash
+# Set environment
+export NODE_ENV=production
+
+# Application will load:
+# 1. .env.production (if exists)
+# 2. .env (fallback)
+```
+
+**Important:** All `.env*` files are ignored by git. Never commit secrets to the repository.
 
 ### Run locally (without Docker)
 
-```bash
-npm install
+1. **Install dependencies:**
+   ```bash
+   npm install
+   ```
 
-# export env vars or use a local .env file
-export TELEGRAM_BOT_TOKEN=...
-export MONGODB_URI=mongodb://user:pass@localhost:27017/conference_networking
-export SECOND_SCREEN_API_KEY=some-long-random-string
+2. **Set up environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your actual values
+   ```
 
-npm run dev
-```
+3. **Start the application:**
+   ```bash
+   # Development mode (default)
+   npm run dev
+
+   # Or with explicit environment
+   NODE_ENV=development npm start
+   ```
+
+The application will:
+- Validate all required environment variables on startup
+- Show warnings for missing optional variables
+- Exit with clear error messages if required variables are missing
 
 The server will start on `http://localhost:3000`.
 
-- Healthcheck: `GET /health`
-- Second screen page (HTML): `GET /second-screen/<conferenceCode>?key=<SECOND_SCREEN_API_KEY>`
-- Second screen REST API (protected): `GET /conference/:code/...` with header `X-SECOND-SCREEN-KEY: SECOND_SCREEN_API_KEY`
+**Available endpoints:**
+- `GET /health` — Health check endpoint (public)
+- `GET /second-screen/:code?key=<SECOND_SCREEN_API_KEY>` — Second screen HTML page (protected via query parameter)
+- `GET /conference/:code/polls` — Get polls for conference (protected, requires `X-SECOND-SCREEN-KEY` header)
+- `GET /conference/:code/questions` — Get questions for conference (protected, requires `X-SECOND-SCREEN-KEY` header)
+- `GET /conference/:code/stats` — Get conference statistics (protected, requires `X-SECOND-SCREEN-KEY` header)
+
+**Security:**
+- All `/conference/*` REST endpoints require the `X-SECOND-SCREEN-KEY` header with a valid API key
+- Second screen HTML page requires the `key` query parameter
+- Socket.IO connections require authentication via `secondScreenKey` in handshake auth
+- Without a valid API key, all second screen endpoints return `401 Unauthorized`
 
 ### Run with Docker (recommended for quick demo)
 

@@ -1,4 +1,5 @@
 const { Conference } = require('../models/conference');
+const { getConferenceIdByCode } = require('../lib/conference-helper');
 
 function initSecondScreenSocket(io) {
   io.on('connection', (socket) => {
@@ -20,16 +21,18 @@ function initSecondScreenSocket(io) {
           return;
         }
 
-        const conference = await Conference.findOne({ conferenceCode: code });
-        if (!conference) {
+        // Convert conferenceCode to conferenceId (ObjectId) for consistent usage
+        const conferenceId = await getConferenceIdByCode(code);
+
+        // Use conferenceId (ObjectId) for room naming
+        const room = `conference-${conferenceId.toString()}`;
+        socket.join(room);
+        socket.emit('joined-conference', { room, conferenceId });
+      } catch (err) {
+        if (err.message === 'CONFERENCE_NOT_FOUND') {
           socket.emit('error', 'Conference not found');
           return;
         }
-
-        const room = `conference-${conference._id.toString()}`;
-        socket.join(room);
-        socket.emit('joined-conference', { room, conferenceId: conference._id });
-      } catch (err) {
         console.error('Error in join-conference socket handler', err);
         socket.emit('error', 'Internal server error');
       }

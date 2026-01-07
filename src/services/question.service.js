@@ -4,6 +4,7 @@ const { UserProfile } = require('../models/userProfile');
 const { User } = require('../models/user');
 const { ensureUserFromTelegram, userIsMainAdmin } = require('./conference.service');
 const { emitToConference } = require('../lib/realtime');
+const { getConferenceIdByCode } = require('../lib/conference-helper');
 
 function parseMainAdminIdsFromEnv() {
   const raw = process.env.MAIN_ADMIN_TELEGRAM_IDS || '';
@@ -23,8 +24,12 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
 
   const user = await ensureUserFromTelegram(telegramUser);
 
+  // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
+  const conferenceId = await getConferenceIdByCode(validatedCode);
+  
+  // Verify conference is not ended
   const conference = await Conference.findOne({
-    conferenceCode: validatedCode,
+    _id: conferenceId,
     isEnded: false,
   });
   if (!conference) {
@@ -32,9 +37,10 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
     throw err;
   }
 
+  // Use conferenceId (ObjectId) for all DB queries
   const profile = await UserProfile.findOne({
     telegramId: user.telegramId,
-    conference: conference._id,
+    conference: conferenceId,
     isActive: true,
   });
 
@@ -51,8 +57,9 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
     }
   }
 
+  // Use conferenceId (ObjectId) for all DB operations
   const question = new Question({
-    conference: conference._id,
+    conference: conferenceId,
     author: profile._id,
     text: validatedText,
     status: 'pending',
@@ -61,8 +68,8 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
 
   await question.save();
 
-  // Optionally notify second screen / moderators about new question
-  emitToConference(conference._id, 'question-created', {
+  // Use conferenceId (ObjectId) for real-time events
+  emitToConference(conferenceId, 'question-created', {
     _id: question._id,
     id: question._id,
     text: question.text,
@@ -78,16 +85,19 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
 }
 
 async function listQuestionsForModeration({ moderatorUser, conferenceCode }) {
-  const conference = await Conference.findOne({ conferenceCode });
+  // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+  
+  const conference = await Conference.findById(conferenceId);
   if (!conference) {
     const err = new Error('CONFERENCE_NOT_FOUND');
     throw err;
   }
 
-  // Main admin or conference admin
+  // Use conferenceId (ObjectId) for all DB queries
   const profiles = await UserProfile.find({
     telegramId: moderatorUser.telegramId,
-    conference: conference._id,
+    conference: conferenceId,
   });
   const profileIdsStr = profiles.map((p) => p._id.toString());
   const isConferenceAdmin =
@@ -99,8 +109,9 @@ async function listQuestionsForModeration({ moderatorUser, conferenceCode }) {
     throw err;
   }
 
+  // Use conferenceId (ObjectId) for all DB queries
   const questions = await Question.find({
-    conference: conference._id,
+    conference: conferenceId,
     status: 'pending',
   }).sort({ createdAt: 1 });
 
@@ -140,6 +151,7 @@ async function approveQuestion({ moderatorUser, conferenceCode, questionId }) {
   question.status = 'approved';
   await question.save();
 
+  // Use conference._id (ObjectId) for real-time events
   emitToConference(conference._id, 'question-updated', {
     _id: question._id,
     id: question._id,
@@ -184,6 +196,7 @@ async function rejectQuestion({ moderatorUser, conferenceCode, questionId }) {
   question.status = 'rejected';
   await question.save();
 
+  // Use conference._id (ObjectId) for real-time events
   emitToConference(conference._id, 'question-updated', {
     _id: question._id,
     id: question._id,
@@ -250,7 +263,8 @@ async function answerQuestion({ speakerUser, conferenceCode, questionId, answerT
   question.answeredBy = speakerProfile._id;
   await question.save();
 
-  emitToConference(conference._id, 'question-answered', {
+  // Use conferenceId (ObjectId) for real-time events
+  emitToConference(conferenceId, 'question-answered', {
     id: question._id,
     text: question.text,
     answer: question.answer,

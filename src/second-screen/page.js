@@ -9,10 +9,6 @@ router.get('/second-screen/:code', async (req, res) => {
     const { code } = req.params;
     const providedKey = req.query.key;
     const configuredKey = process.env.SECOND_SCREEN_API_KEY;
-
-    console.log('configuredKey', configuredKey);
-    console.log('providedKey', providedKey);
-    console.log('code', code);
  
     if (!configuredKey) {
       return res.status(500).send('Second screen API key is not configured on server.');
@@ -22,10 +18,14 @@ router.get('/second-screen/:code', async (req, res) => {
       return res.status(401).send('Invalid or missing second screen key.');
     }
 
+    // Get conference for display, but use conferenceId internally
     const conference = await Conference.findOne({ conferenceCode: code });
     if (!conference) {
       return res.status(404).send('Conference not found.');
     }
+    
+    // Use conferenceId (ObjectId) for all internal operations
+    const conferenceId = conference._id;
 
     const html = `
 <!DOCTYPE html>
