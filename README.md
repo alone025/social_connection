@@ -44,7 +44,11 @@ The application supports environment-specific configuration files:
 - `.env.staging` — For staging environment
 - `.env.production` — For production
 
-The application will automatically load `.env.<NODE_ENV>` first, then fall back to `.env` if the environment-specific file doesn't exist.
+**How it works:**
+1. Application reads `NODE_ENV` environment variable (defaults to `development`)
+2. Loads `.env.<NODE_ENV>` if it exists
+3. Falls back to `.env` if environment-specific file doesn't exist
+4. Validates all required variables on startup
 
 **Example:**
 ```bash
@@ -56,7 +60,10 @@ export NODE_ENV=production
 # 2. .env (fallback)
 ```
 
-**Important:** All `.env*` files are ignored by git. Never commit secrets to the repository.
+**Important:** 
+- All `.env*` files are ignored by git. Never commit secrets to the repository.
+- For production deployment, create `.env.production` on your server with production values.
+- See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed deployment instructions.
 
 ### Run locally (without Docker)
 
@@ -109,8 +116,10 @@ TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 SECOND_SCREEN_API_KEY=your-second-screen-key
 MAIN_ADMIN_TELEGRAM_IDS=123456789
 MONGO_ROOT_USER=root
-MONGO_ROOT_PASSWORD=example
+MONGO_ROOT_PASSWORD=your-secure-password-here
 ```
+
+**Important:** Replace `your-secure-password-here` with a strong password. The default `example` is insecure and should never be used in production.
 
 2. Build and start:
 
@@ -122,6 +131,13 @@ This will:
 
 - start MongoDB on port `27017`
 - build and run the app on port `3000`
+- automatically construct `MONGODB_URI` using Docker service names
+
+**Note:** The `MONGODB_URI` in `docker-compose.yml` is automatically constructed from `MONGO_ROOT_USER` and `MONGO_ROOT_PASSWORD` environment variables. If you need to use an external MongoDB, set `MONGODB_URI` directly in your `.env` file.
+
+### Deployment
+
+For detailed deployment instructions, including production setup, Docker configuration, and environment management, see **[DEPLOYMENT.md](./DEPLOYMENT.md)**.
 
 ### Telegram bot usage (short)
 

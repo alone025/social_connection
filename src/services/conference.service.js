@@ -102,23 +102,40 @@ async function joinConference({ telegramUser, code }) {
     throw new Error('CONFERENCE_PRIVATE');
   }
 
-  let profile = await UserProfile.findOne({
+  // Try to copy from global profile first
+  const { copyGlobalProfileToConference } = require('./profile.service');
+  let profile = await copyGlobalProfileToConference({
     telegramId: String(telegramUser.id),
-    conference: conference._id,
+    conferenceId: conference._id,
   });
 
+  // If no global profile exists, create a new conference profile
   if (!profile) {
-    profile = new UserProfile({
+    profile = await UserProfile.findOne({
       telegramId: String(telegramUser.id),
       conference: conference._id,
-      firstName: telegramUser.first_name,
-      lastName: telegramUser.last_name,
-      username: telegramUser.username,
-      isActive: true,
     });
+
+    if (!profile) {
+      profile = new UserProfile({
+        telegramId: String(telegramUser.id),
+        conference: conference._id,
+        firstName: telegramUser.first_name,
+        lastName: telegramUser.last_name,
+        username: telegramUser.username,
+        isActive: true,
+        onboardingCompleted: false, // Will be set when user completes global onboarding
+      });
+    }
   }
 
   profile.isActive = true;
+  // Ensure onboardingCompleted is set if global profile exists and is completed
+  const { getGlobalProfile } = require('./profile.service');
+  const globalProfile = await getGlobalProfile(String(telegramUser.id));
+  if (globalProfile && globalProfile.onboardingCompleted) {
+    profile.onboardingCompleted = true;
+  }
   await profile.save();
 
   return { conference, profile, user };

@@ -175,13 +175,295 @@ async function getConferenceCodeFromPoll(pollId) {
   return conference ? conference.conferenceCode : null;
 }
 
+/**
+ * Format conferences list with buttons for my_conferences handler
+ */
+async function formatConferencesListWithButtons(conferences, getSecondScreenUrl) {
+  const { Markup } = require('telegraf');
+  
+  const lines = conferences
+    .filter((c) => c && c.conferenceCode)
+    .map((c) => {
+      const startDate = c.startsAt instanceof Date 
+        ? c.startsAt.toLocaleString('ru-RU') 
+        : (c.startsAt ? new Date(c.startsAt).toLocaleString('ru-RU') : '');
+      return `• ${c.title}\n  Код: ${c.conferenceCode}${startDate ? `\n  Старт: ${startDate}` : ''}`;
+    });
+
+  const buttons = conferences
+    .filter((c) => c && c.conferenceCode)
+    .map((c) => {
+      const row = [Markup.button.callback(`📋 ${c.title}`, `conf:details:${c.conferenceCode}`)];
+      const secondScreenUrl = getSecondScreenUrl(c.conferenceCode);
+      if (secondScreenUrl) {
+        row.push(Markup.button.url('📺', secondScreenUrl));
+      }
+      return row;
+    });
+  buttons.push([Markup.button.callback('◀️ Назад', 'menu:main')]);
+
+  return {
+    text: `📋 Ваши конференции:\n\n${lines.join('\n\n')}\n\n📺 - открыть второй экран`,
+    buttons: Markup.inlineKeyboard(buttons),
+  };
+}
+
+/**
+ * Process search filter results and send notifications
+ */
+async function processSearchFilterResults({ profiles, conferenceCode, searcherTelegramId, getSearchFilterMenu }) {
+  const { ensureUserFromTelegram } = require('./conference.service');
+  const { UserProfile } = require('../models/userProfile');
+  const { getConferenceIdByCode } = require('../lib/conference-helper');
+  const { getBot } = require('../telegram/bot');
+
+  const searcher = await ensureUserFromTelegram({ id: searcherTelegramId });
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+  const searcherProfile = await UserProfile.findOne({
+    telegramId: searcher.telegramId,
+    conference: conferenceId,
+    isActive: true,
+  });
+
+  const resultText = [];
+  const profilesWithoutUsername = [];
+
+  for (const p of profiles) {
+    const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
+    const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
+    const username = p.user?.username ? `\n  @${p.user.username}` : '';
+    resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
+    
+    if (!p.user?.username && p.telegramId !== searcher.telegramId) {
+      profilesWithoutUsername.push(p);
+    }
+  }
+
+  // Send notifications to users without username
+  if (profilesWithoutUsername.length > 0 && searcherProfile) {
+    const bot = getBot();
+    const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
+    const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
+    
+    for (const profile of profilesWithoutUsername) {
+      try {
+        const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
+          `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
+        await bot.telegram.sendMessage(profile.telegramId, notificationText);
+      } catch (err) {
+        console.error(`Error sending notification to ${profile.telegramId}:`, err);
+      }
+    }
+  }
+
+  return {
+    text: `🔍 Найдено участников: ${profiles.length}\n\n${resultText.join('\n\n')}`,
+    menu: getSearchFilterMenu(conferenceCode),
+  };
+}
+
+/**
+ * Process text search results and send notifications
+ */
+async function processTextSearchResults({ profiles, searchText, conferenceCode, searcherTelegramId, getSearchFilterMenu }) {
+  const { ensureUserFromTelegram } = require('./conference.service');
+  const { UserProfile } = require('../models/userProfile');
+  const { getConferenceIdByCode } = require('../lib/conference-helper');
+  const { getBot } = require('../telegram/bot');
+
+  const searcher = await ensureUserFromTelegram({ id: searcherTelegramId });
+  const conferenceId = await getConferenceIdByCode(conferenceCode);
+  const searcherProfile = await UserProfile.findOne({
+    telegramId: searcher.telegramId,
+    conference: conferenceId,
+    isActive: true,
+  });
+
+  const resultText = [];
+  const profilesWithoutUsername = [];
+
+  for (const p of profiles) {
+    const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
+    const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
+    const username = p.user?.username ? `\n  @${p.user.username}` : '';
+    resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
+    
+    if (!p.user?.username && p.telegramId !== searcher.telegramId) {
+      profilesWithoutUsername.push(p);
+    }
+  }
+
+  // Send notifications to users without username
+  if (profilesWithoutUsername.length > 0 && searcherProfile) {
+    const bot = getBot();
+    const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
+    const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
+    
+    for (const profile of profilesWithoutUsername) {
+      try {
+        const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
+          `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
+        await bot.telegram.sendMessage(profile.telegramId, notificationText);
+      } catch (err) {
+        console.error(`Error sending notification to ${profile.telegramId}:`, err);
+      }
+    }
+  }
+
+  return {
+    text: `🔍 Найдено участников по запросу "${searchText}": ${profiles.length}\n\n${resultText.join('\n\n')}`,
+    menu: getSearchFilterMenu(conferenceCode),
+  };
+}
+
+/**
+ * Process onboarding step
+ */
+async function processOnboardingStep({ step, text, onboardingData, telegramUser }) {
+  const { validate, userProfileSchema } = require('../lib/validation');
+  const { listConferencesForUser } = require('./conference.service');
+  const { getConferenceSelectionMenu, getMainMenu } = require('../telegram/menus');
+  const { Markup } = require('telegraf');
+
+  const result = {
+    nextStep: step,
+    data: { ...onboardingData },
+    response: null,
+    shouldContinue: true,
+  };
+
+  if (step === 1) {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length < 1) {
+      result.response = 'Пожалуйста, введите хотя бы имя.';
+      result.shouldContinue = false;
+      return result;
+    }
+    const firstName = parts[0];
+    const lastName = parts.slice(1).join(' ') || '';
+
+    if (lastName) {
+      validate({ firstName, lastName }, userProfileSchema);
+    } else {
+      validate({ firstName }, userProfileSchema);
+    }
+
+    result.data.firstName = firstName;
+    result.data.lastName = lastName;
+    result.nextStep = 2;
+    result.response = '✅ Отлично!\n\n' +
+      'Шаг 2/5: Напиши свои интересы через запятую (например: AI, Web3, Product).\n' +
+      '💡 Это поможет другим участникам найти тебя по интересам.\n' +
+      'Если не хочешь указывать — напиши "-".';
+    return result;
+  }
+
+  if (step === 2) {
+    let interests = [];
+    if (text.trim() !== '-' && text.trim() !== '') {
+      interests = text.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    if (interests.length) {
+      try {
+        validate({ interests }, userProfileSchema);
+        result.data.interests = interests;
+      } catch (validationErr) {
+        const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации интересов';
+        result.response = `❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`;
+        result.shouldContinue = false;
+        return result;
+      }
+    }
+
+    result.nextStep = 3;
+    result.response = '✅ Отлично!\n\n' +
+      'Шаг 3/5: Что ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\n' +
+      'Например: консалтинг по маркетингу, инвестиции, партнёрства.\n' +
+      '💡 Это поможет людям понять, чем ты можешь быть полезен.\n' +
+      'Если хочешь пропустить — напиши "-".';
+    return result;
+  }
+
+  if (step === 3) {
+    let offerings = [];
+    if (text.trim() !== '-' && text.trim() !== '') {
+      offerings = text.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    if (offerings.length) {
+      try {
+        validate({ offerings }, userProfileSchema);
+        result.data.offerings = offerings;
+      } catch (validationErr) {
+        const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации предложений';
+        result.response = `❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`;
+        result.shouldContinue = false;
+        return result;
+      }
+    }
+
+    result.nextStep = 4;
+    result.response = '✅ Отлично!\n\n' +
+      'Шаг 4/5: Что ты ищешь на конференции? Напиши 1–3 пункта через запятую.\n' +
+      'Например: партнёры, ментор, инвестор.\n' +
+      '💡 Это поможет найти людей, которые могут помочь тебе.\n' +
+      'Если хочешь пропустить — напиши "-".';
+    return result;
+  }
+
+  if (step === 4) {
+    let lookingFor = [];
+    if (text.trim() !== '-' && text.trim() !== '') {
+      lookingFor = text.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+
+    if (lookingFor.length) {
+      try {
+        validate({ lookingFor }, userProfileSchema);
+        result.data.lookingFor = lookingFor;
+      } catch (validationErr) {
+        const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации пунктов поиска';
+        result.response = `❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`;
+        result.shouldContinue = false;
+        return result;
+      }
+    }
+
+    result.nextStep = 5;
+    result.response = {
+      text: '✅ Отлично!\n\n' +
+        'Шаг 5/5: Выбери свою роль на конференции.\n' +
+        '💡 Это поможет другим участникам найти тебя по роли.\n' +
+        '⚠️ Роль "Спикер" назначается только администратором конференции.\n\n' +
+        'Выбери роль:',
+      menu: Markup.inlineKeyboard([
+        [{ text: '💰 Инвестор', callback_data: 'onboarding:role:investor' }],
+        [{ text: '👤 Участник', callback_data: 'onboarding:role:participant' }],
+        [{ text: '📋 Организатор', callback_data: 'onboarding:role:organizer' }],
+        [{ text: '⏭️ Пропустить', callback_data: 'onboarding:role:skip' }],
+      ]),
+    };
+    return result;
+  }
+
+  // Step 5 (role selection) is the final step now
+  // Profile is saved to global profile, not conference-specific
+  // When user joins a conference, profile data will be copied automatically
+  return result;
+}
+
 module.exports = {
   formatErrorMessage,
   getMenuForUser,
   handleHandlerError,
   formatConferenceDetails,
   formatConferencesList,
+  formatConferencesListWithButtons,
   formatPollsList,
   formatQuestionsList,
   getConferenceCodeFromPoll,
+  processSearchFilterResults,
+  processOnboardingStep,
+  processTextSearchResults,
 };

@@ -81,6 +81,7 @@ async function getMainMenu(telegramUser) {
   buttons.push([Markup.button.callback('📋 Мои конференции', 'menu:my_conferences')]);
   buttons.push([Markup.button.callback('➕ Присоединиться к конференции', 'menu:join_conference')]);
   buttons.push([Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')]);
+  buttons.push([Markup.button.callback('👁️ Мой профиль', 'menu:view_profile')]);
   buttons.push([Markup.button.callback('🔍 Найти участников', 'menu:find_participants')]);
   buttons.push([Markup.button.callback('🤝 Встречи 1:1', 'menu:meetings')]);
   buttons.push([Markup.button.callback('❓ Задать вопрос', 'menu:ask_question')]);
@@ -112,6 +113,7 @@ function getUserMenu() {
     [Markup.button.callback('📋 Мои конференции', 'menu:my_conferences')],
     [Markup.button.callback('➕ Присоединиться', 'menu:join_conference')],
     [Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')],
+    [Markup.button.callback('👁️ Мой профиль', 'menu:view_profile')],
     [Markup.button.callback('🔍 Найти участников', 'menu:find_participants')],
     [Markup.button.callback('🤝 Встречи 1:1', 'menu:meetings')],
     [Markup.button.callback('❓ Задать вопрос', 'menu:ask_question')],
@@ -433,14 +435,49 @@ function getMeetingDetailsMenu(meeting, conferenceCode, userTelegramId, chatUrl 
  * Participant selection menu for meeting request
  */
 function getMeetingParticipantMenu(participants, conferenceCode) {
-  const buttons = participants.slice(0, 20).map((p) => [
-    Markup.button.callback(
-      `${p.firstName} ${p.lastName || ''}${p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : ''}`.trim(),
-      `meeting:select_participant:${conferenceCode}:${p._id}`
-    ),
-  ]);
+  const buttons = participants.slice(0, 20).map((p) => {
+    // Use only profile ID to keep callback_data under 64 bytes limit
+    // Format: meeting:select:PROFILE_ID (conferenceCode will be retrieved from profile)
+    // ObjectId is 24 chars, "meeting:select:" is 15 chars = 39 total (well under 64 bytes)
+    const profileId = p._id.toString();
+    const callbackData = `meeting:select:${profileId}`;
+    
+    // Use profile name (from onboarding) instead of Telegram name
+    const profileName = `${p.firstName || ''} ${p.lastName || ''}`.trim() || 'Участник';
+    const rolesText = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
+    
+    return [
+      Markup.button.callback(
+        `${profileName}${rolesText}`,
+        callbackData
+      ),
+    ];
+  });
   buttons.push([Markup.button.callback('◀️ Назад', `meeting:menu:${conferenceCode}`)]);
   return Markup.inlineKeyboard(buttons);
+}
+
+/**
+ * Meeting date selection menu with quick options
+ */
+function getMeetingDateMenu(conferenceCode) {
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const nextWeek = new Date(today);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  
+  const formatDate = (date) => {
+    return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+  
+  return Markup.inlineKeyboard([
+    [{ text: `📅 Сегодня (${formatDate(today)})`, callback_data: `meeting:date:${conferenceCode}:today` }],
+    [{ text: `📅 Завтра (${formatDate(tomorrow)})`, callback_data: `meeting:date:${conferenceCode}:tomorrow` }],
+    [{ text: `📅 Через неделю (${formatDate(nextWeek)})`, callback_data: `meeting:date:${conferenceCode}:nextweek` }],
+    [{ text: '📝 Ввести дату вручную', callback_data: `meeting:date:${conferenceCode}:manual` }],
+    [{ text: '◀️ Отмена', callback_data: `meeting:request:${conferenceCode}` }],
+  ]);
 }
 
 module.exports = {
@@ -470,5 +507,6 @@ module.exports = {
   getMeetingListMenu,
   getMeetingDetailsMenu,
   getMeetingParticipantMenu,
+  getMeetingDateMenu,
 };
 

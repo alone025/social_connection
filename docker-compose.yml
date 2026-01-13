@@ -21,6 +21,10 @@ services:
       NODE_ENV: production
       PORT: 3000
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      # MONGODB_URI is constructed from MONGO_ROOT_USER and MONGO_ROOT_PASSWORD
+      # Format: mongodb://[user]:[password]@[host]:[port]/[database]?authSource=admin
+      # The 'mongo' hostname refers to the MongoDB service in this docker-compose file
+      # For external MongoDB, set MONGODB_URI directly in .env file instead
       MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-example}@mongo:27017/conference_networking?authSource=admin
       SECOND_SCREEN_API_KEY: ${SECOND_SCREEN_API_KEY}
       MAIN_ADMIN_TELEGRAM_IDS: ${MAIN_ADMIN_TELEGRAM_IDS}

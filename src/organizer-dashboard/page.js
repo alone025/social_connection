@@ -309,6 +309,21 @@ router.get('/organizer-dashboard/:code', async (req, res) => {
           <div class="metric-value">${report.meetings.total}</div>
           <div class="metric-label">${report.meetings.accepted} принято, ${report.meetings.completed} завершено</div>
         </div>
+
+        <div class="metric-card">
+          <h3>📊 Онбординг</h3>
+          <div class="metric-value">${report.onboarding.completionRate}%</div>
+          <div class="metric-label">${report.onboarding.totalCompleted} из ${report.onboarding.totalStarted || report.participants.total} завершили</div>
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: ${report.onboarding.completionRate}%"></div>
+          </div>
+          <span class="engagement-indicator ${
+            report.onboarding.completionRate >= 80 ? 'engagement-high' :
+            report.onboarding.completionRate >= 60 ? 'engagement-medium' : 'engagement-low'
+          }" style="margin-top: 8px; display: inline-block;">
+            ${report.onboarding.completionRate >= 80 ? '✅ Цель достигнута' : report.onboarding.completionRate >= 60 ? '⚠️ Близко к цели' : '❌ Ниже цели'}
+          </span>
+        </div>
       </div>
 
       <div class="section">
@@ -399,6 +414,39 @@ router.get('/organizer-dashboard/:code', async (req, res) => {
           <span class="stat-value">${Math.round((report.meetings.completed / report.meetings.total) * 100)}%</span>
         </div>
         ` : ''}
+      </div>
+
+      <div class="section">
+        <h2>📊 Детали по онбордингу</h2>
+        <div class="stat-row">
+          <span class="stat-label">Начали онбординг</span>
+          <span class="stat-value">${report.onboarding.totalStarted}</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">✅ Завершили</span>
+          <span class="stat-value">${report.onboarding.totalCompleted}</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">📈 Процент завершения</span>
+          <span class="stat-value">${report.onboarding.completionRate}%</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">⚠️ Процент отказов</span>
+          <span class="stat-value">${report.onboarding.abandonmentRate}%</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">⏱️ Среднее время завершения</span>
+          <span class="stat-value">${report.onboarding.avgCompletionTimeMinutes} минут</span>
+        </div>
+        ${report.onboarding.completionRate >= 80 ? `
+        <div class="stat-row" style="background: #c6f6d5; padding: 12px; border-radius: 8px; margin-top: 8px;">
+          <span class="stat-label" style="color: #22543d; font-weight: 600;">✅ Цель достигнута: ≥80% завершения онбординга!</span>
+        </div>
+        ` : `
+        <div class="stat-row" style="background: #feebc8; padding: 12px; border-radius: 8px; margin-top: 8px;">
+          <span class="stat-label" style="color: #7c2d12; font-weight: 600;">📊 Текущий показатель: ${report.onboarding.completionRate}% (цель: ≥80%)</span>
+        </div>
+        `}
       </div>
 
       <div class="footer">

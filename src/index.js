@@ -22,11 +22,15 @@ function startMeetingNotificationScheduler() {
   // Check every minute for meetings that are starting
   setInterval(async () => {
     try {
+      // Get current time - Date objects in JavaScript are always in UTC internally
+      // MongoDB stores dates in UTC, and Date.getTime() returns milliseconds since epoch (UTC)
+      // So comparisons using getTime() are timezone-independent
       const now = new Date();
       const oneMinuteAgo = new Date(now.getTime() - 1 * 60 * 1000);
       const oneMinuteFromNow = new Date(now.getTime() + 1 * 60 * 1000);
 
       // Find meetings that are starting now (within 1 minute window to avoid duplicates)
+      // MongoDB stores dates in UTC, so proposedTime is in UTC
       const startingMeetings = await Meeting.find({
         status: 'accepted',
         proposedTime: {
@@ -40,7 +44,10 @@ function startMeetingNotificationScheduler() {
 
       for (const meeting of startingMeetings) {
         // Notify if meeting time is within 1 minute of now (just started or about to start)
+        // getTime() returns milliseconds since epoch (UTC), so comparison is timezone-independent
         const timeUntilMeeting = meeting.proposedTime.getTime() - now.getTime();
+        const serverTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        console.log(`[Meeting Scheduler] Meeting time: ${meeting.proposedTime.toISOString()} (${meeting.proposedTime.toLocaleString('ru-RU', { timeZone: serverTZ })}), Now: ${now.toISOString()} (${now.toLocaleString('ru-RU', { timeZone: serverTZ })}), Diff: ${Math.round(timeUntilMeeting / 1000 / 60)} minutes`);
         if (Math.abs(timeUntilMeeting) <= 1 * 60 * 1000) {
           await notifyMeetingStarting({ meeting });
         }

@@ -63,10 +63,8 @@ const {
   getMeetingListMenu,
   getMeetingDetailsMenu,
   getMeetingParticipantMenu,
+  getMeetingDateMenu,
 } = require('./menus');
-
-// Simple in-memory onboarding state per Telegram user
-const onboardingState = new Map();
 
 // In-memory state for various flows (conference selection, question input, etc.)
 const userState = new Map();
@@ -74,9 +72,18 @@ const userState = new Map();
 /**
  * Clear all state for a user
  */
-function clearUserState(telegramId) {
+async function clearUserState(telegramId) {
   userState.delete(telegramId);
-  onboardingState.delete(telegramId);
+  // Clear onboarding state from database
+  const { clearOnboardingState } = require('../services/onboarding.service');
+  try {
+    await clearOnboardingState(telegramId);
+  } catch (err) {
+    // Ignore errors if state doesn't exist
+    if (err.message !== 'ONBOARDING_STATE_NOT_FOUND') {
+      console.error('Error clearing onboarding state:', err);
+    }
+  }
 }
 
 let botInstance;
@@ -95,7 +102,7 @@ function initBot() {
   // ========== START COMMAND ==========
   bot.start(async (ctx) => {
     // Clear any existing state when user starts
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     
     const user = await ensureUserFromTelegram(ctx.from);
     const roles = await getUserRoles(ctx.from);
@@ -120,7 +127,7 @@ function initBot() {
 
   // ========== CANCEL COMMAND ==========
   bot.command('cancel', async (ctx) => {
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     await ctx.reply('✅ Текущее действие отменено.', await getMainMenu(ctx.from));
   });
 
@@ -129,15 +136,25 @@ function initBot() {
   // Main menu
   bot.action('menu:main', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when returning to main menu
+    await clearUserState(ctx.from.id); // Clear state when returning to main menu
     let text = '🏠 Главное меню\n\nВыберите действие:';
-    await ctx.editMessageText(text, await getMainMenu(ctx.from));
+    try {
+      await ctx.editMessageText(text, await getMainMenu(ctx.from));
+    } catch (err) {
+      // Handle "message is not modified" error - this is not critical
+      if (err.response && err.response.error_code === 400 && 
+          err.response.description && err.response.description.includes('message is not modified')) {
+        // Message is already up to date, just answer the callback query (already done above)
+        return;
+      }
+      throw err; // Re-throw if it's a different error
+    }
   });
 
   // User menu
   bot.action('menu:my_conferences', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when navigating to menu
+    await clearUserState(ctx.from.id);
     try {
       const user = await ensureUserFromTelegram(ctx.from);
       const conferences = await listConferencesForUser(user);
@@ -149,39 +166,18 @@ function initBot() {
         );
       }
 
-      const lines = conferences
-        .filter((c) => c && c.conferenceCode)
-        .map((c) => {
-          const startDate = c.startsAt instanceof Date ? c.startsAt.toLocaleString('ru-RU') : (c.startsAt ? new Date(c.startsAt).toLocaleString('ru-RU') : '');
-          return `• ${c.title}\n  Код: ${c.conferenceCode}${startDate ? `\n  Старт: ${startDate}` : ''}`;
-        });
-
-      // Create buttons with second screen links
-      const buttons = conferences
-        .filter((c) => c && c.conferenceCode) // Filter out invalid conferences
-        .map((c) => {
-          const row = [Markup.button.callback(`📋 ${c.title}`, `conf:details:${c.conferenceCode}`)];
-          const secondScreenUrl = getSecondScreenUrl(c.conferenceCode);
-          if (secondScreenUrl) {
-            row.push(Markup.button.url('📺', secondScreenUrl));
-          }
-          return row;
-        });
-      buttons.push([Markup.button.callback('◀️ Назад', 'menu:main')]);
-
-      await ctx.editMessageText(
-        `📋 Ваши конференции:\n\n${lines.join('\n\n')}\n\n📺 - открыть второй экран`,
-        Markup.inlineKeyboard(buttons)
-      );
+      const { formatConferencesListWithButtons } = require('../services/handler.service');
+      const formatted = await formatConferencesListWithButtons(conferences, getSecondScreenUrl);
+      await ctx.editMessageText(formatted.text, formatted.buttons);
     } catch (err) {
-      console.error('Error in menu:my_conferences', err);
-      await ctx.editMessageText('❌ Произошла ошибка при получении списка конференций.', getUserMenu());
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getUserMenu());
     }
   });
 
   bot.action('menu:join_conference', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state (both userState and onboardingState)
+    await clearUserState(ctx.from.id); // Clear ALL previous state (both userState and onboardingState)
     userState.set(ctx.from.id, { flow: 'join_conference' });
     await ctx.editMessageText(
       '➕ Присоединение к конференции\n\nВведите код конференции:',
@@ -189,102 +185,284 @@ function initBot() {
     );
   });
 
+  bot.action('menu:view_profile', async (ctx) => {
+    await ctx.answerCbQuery();
+    await clearUserState(ctx.from.id);
+    try {
+      const { getGlobalProfile } = require('../services/profile.service');
+      const globalProfile = await getGlobalProfile(ctx.from.id);
+      
+      if (!globalProfile || !globalProfile.onboardingCompleted) {
+        return ctx.editMessageText(
+          '👤 Мой профиль\n\n❌ Профиль ещё не заполнен.\n\nИспользуйте кнопку "👤 Заполнить профиль" для создания профиля.',
+          await getMainMenu(ctx.from)
+        );
+      }
+
+      const lines = [
+        '👤 МОЙ ПРОФИЛЬ\n',
+        `👤 Имя: ${globalProfile.firstName || ''} ${globalProfile.lastName || ''}`.trim() || 'Не указано',
+        globalProfile.username ? `📱 Username: @${globalProfile.username}` : '',
+        '',
+        globalProfile.interests && globalProfile.interests.length > 0
+          ? `🎯 Интересы: ${globalProfile.interests.join(', ')}`
+          : '🎯 Интересы: Не указано',
+        '',
+        globalProfile.offerings && globalProfile.offerings.length > 0
+          ? `💼 Предлагаю: ${globalProfile.offerings.join(', ')}`
+          : '💼 Предлагаю: Не указано',
+        '',
+        globalProfile.lookingFor && globalProfile.lookingFor.length > 0
+          ? `🔍 Ищу: ${globalProfile.lookingFor.join(', ')}`
+          : '🔍 Ищу: Не указано',
+        '',
+        globalProfile.roles && globalProfile.roles.length > 0
+          ? `👥 Роли: ${globalProfile.roles.map(r => {
+              const roleNames = { investor: '💰 Инвестор', participant: '👤 Участник', organizer: '📋 Организатор', speaker: '🎤 Спикер' };
+              return roleNames[r] || r;
+            }).join(', ')}`
+          : '👥 Роли: Не указано',
+      ];
+
+      await ctx.editMessageText(
+        lines.filter(Boolean).join('\n'),
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: 'menu:main' }]] } }
+      );
+    } catch (err) {
+      console.error('Error in menu:view_profile', err);
+      await ctx.editMessageText('❌ Ошибка при загрузке профиля.', await getMainMenu(ctx.from));
+    }
+  });
+
   bot.action('menu:onboarding', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state (both userState and onboardingState)
-    onboardingState.set(ctx.from.id, { step: 1, data: {} });
+    userState.delete(ctx.from.id); // Clear userState only
+    const { getGlobalProfile } = require('../services/profile.service');
+    const globalProfile = await getGlobalProfile(ctx.from.id);
+    
+    // If user has completed profile, show update menu with buttons
+    if (globalProfile && globalProfile.onboardingCompleted) {
+      await ctx.editMessageText(
+        '✏️ Обновление профиля\n\nВыберите, что хотите обновить:',
+        Markup.inlineKeyboard([
+          [{ text: '👤 Имя и фамилия', callback_data: 'profile:update:name' }],
+          [{ text: '🎯 Интересы', callback_data: 'profile:update:interests' }],
+          [{ text: '💼 Что предлагаю', callback_data: 'profile:update:offerings' }],
+          [{ text: '🔍 Что ищу', callback_data: 'profile:update:lookingFor' }],
+          [{ text: '👥 Роли', callback_data: 'profile:update:roles' }],
+          [{ text: '📋 Заполнить весь профиль заново', callback_data: 'profile:update:full' }],
+          [{ text: '◀️ Назад', callback_data: 'menu:main' }],
+        ])
+      );
+      return;
+    }
+    
+    // New user - show onboarding flow
+    const { getOnboardingState, createOnboardingState, updateOnboardingState } = require('../services/onboarding.service');
+    let onboarding = await getOnboardingState(ctx.from.id);
+    
+    // Create new state if doesn't exist or if already completed
+    if (!onboarding || onboarding.completedAt) {
+      if (onboarding && onboarding.completedAt) {
+        // Reset existing completed state
+        await updateOnboardingState(ctx.from.id, { step: 1, data: {}, completedAt: null });
+        onboarding = await getOnboardingState(ctx.from.id);
+      } else {
+        // Create new state
+        onboarding = await createOnboardingState(ctx.from.id);
+      }
+    }
+    
+    // Continue from where user left off or start from step 1
+    const stepMessages = {
+      1: 'Шаг 1/5: Введите ваше имя и фамилию (например: Иван Иванов):',
+      2: 'Шаг 2/5: Напиши свои интересы через запятую (например: AI, Web3, Product).\n💡 Это поможет другим участникам найти тебя по интересам.\nЕсли не хочешь указывать — напиши "-".',
+      3: 'Шаг 3/5: Что ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\nНапример: консалтинг по маркетингу, инвестиции, партнёрства.\n💡 Это поможет людям понять, чем ты можешь быть полезен.\nЕсли хочешь пропустить — напиши "-".',
+      4: 'Шаг 4/5: Что ты ищешь на конференции? Напиши 1–3 пункта через запятую.\nНапример: партнёры, ментор, инвестор.\n💡 Это поможет найти людей, которые могут помочь тебе.\nЕсли хочешь пропустить — напиши "-".',
+      5: 'Шаг 5/5: Выбери свою роль на конференции.\n💡 Это поможет другим участникам найти тебя по роли.\n⚠️ Роль "Спикер" назначается только администратором конференции.',
+    };
+    
+    const message = stepMessages[onboarding.step] || stepMessages[1];
+    const welcomeText = onboarding.step === 1 
+      ? '👤 Заполнение профиля\n\n📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n'
+      : '👤 Заполнение профиля\n\n✅ Продолжаем с того места, где вы остановились.\n\n';
+    
     await ctx.reply(
-      '👤 Заполнение профиля\n\n' +
-      '📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n' +
-      'Шаг 1/6: Введите ваше имя и фамилию (например: Иван Иванов):',
+      welcomeText + message,
       { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
     );
+  });
+
+  // Profile update handlers
+  bot.action(/^profile:update:(name|interests|offerings|lookingFor|roles|full)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const field = ctx.match[1];
+    const { getGlobalProfile, updateGlobalProfile } = require('../services/profile.service');
+    const globalProfile = await getGlobalProfile(ctx.from.id);
+    
+    if (!globalProfile || !globalProfile.onboardingCompleted) {
+      return ctx.editMessageText('❌ Профиль не заполнен. Используйте "Заполнить профиль".', await getMainMenu(ctx.from));
+    }
+    
+    await clearUserState(ctx.from.id);
+    
+    if (field === 'full') {
+      // Full profile update - start onboarding from beginning
+      const { getOnboardingState, createOnboardingState, updateOnboardingState } = require('../services/onboarding.service');
+      
+      let onboarding = await getOnboardingState(ctx.from.id);
+      if (!onboarding) {
+        // No state yet - create new
+        onboarding = await createOnboardingState(ctx.from.id);
+      } else {
+        // Reset existing state
+        await updateOnboardingState(ctx.from.id, { step: 1, data: {}, completedAt: null });
+      }
+      
+      await ctx.editMessageText(
+        '👤 Заполнение профиля\n\n📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n' +
+        'Шаг 1/5: Введите ваше имя и фамилию (например: Иван Иванов):',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
+      );
+      return;
+    }
+    
+    // Single field update
+    const fieldMessages = {
+      name: '✏️ Обновление имени\n\nВведите ваше имя и фамилию (например: Иван Иванов):',
+      interests: '✏️ Обновление интересов\n\nНапиши свои интересы через запятую (например: AI, Web3, Product).\nЕсли не хочешь указывать — напиши "-".',
+      offerings: '✏️ Обновление предложений\n\nЧто ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\nНапример: консалтинг по маркетингу, инвестиции, партнёрства.\nЕсли хочешь пропустить — напиши "-".',
+      lookingFor: '✏️ Обновление поиска\n\nЧто ты ищешь на конференции? Напиши 1–3 пункта через запятую.\nНапример: партнёры, ментор, инвестор.\nЕсли хочешь пропустить — напиши "-".',
+      roles: '✏️ Обновление ролей\n\nВыбери свою роль на конференции:',
+    };
+    
+    userState.set(ctx.from.id, { flow: 'update_profile', field });
+    
+    if (field === 'roles') {
+      await ctx.editMessageText(
+        fieldMessages[field],
+        Markup.inlineKeyboard([
+          [{ text: '💰 Инвестор', callback_data: 'profile:role:investor' }],
+          [{ text: '👤 Участник', callback_data: 'profile:role:participant' }],
+          [{ text: '📋 Организатор', callback_data: 'profile:role:organizer' }],
+          [{ text: '⏭️ Пропустить', callback_data: 'profile:role:skip' }],
+          [{ text: '◀️ Отмена', callback_data: 'menu:main' }],
+        ])
+      );
+    } else {
+      await ctx.editMessageText(
+        fieldMessages[field],
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
+      );
+    }
+  });
+
+  // Handle role selection for profile update
+  bot.action(/^profile:role:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const role = ctx.match[1];
+    const { getGlobalProfile, updateGlobalProfile } = require('../services/profile.service');
+    const globalProfile = await getGlobalProfile(ctx.from.id);
+    
+    if (!globalProfile) {
+      return ctx.editMessageText('❌ Профиль не найден.', await getMainMenu(ctx.from));
+    }
+    
+    const updatedRoles = [...(globalProfile.roles || [])];
+    if (role !== 'skip') {
+      if (!updatedRoles.includes(role)) {
+        updatedRoles.push(role);
+      }
+    }
+    
+    try {
+      await updateGlobalProfile(ctx.from.id, { roles: updatedRoles });
+      await clearUserState(ctx.from.id);
+      await ctx.editMessageText(
+        '✅ Роли обновлены!',
+        await getMainMenu(ctx.from)
+      );
+    } catch (err) {
+      console.error('Error updating profile roles', err);
+      await ctx.editMessageText('❌ Ошибка при обновлении ролей.', await getMainMenu(ctx.from));
+    }
   });
 
   // Onboarding role selection handler
   bot.action(/^onboarding:role:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const role = ctx.match[1];
-    const onboarding = onboardingState.get(ctx.from.id);
+    const { getOnboardingState, updateOnboardingState, clearOnboardingState } = require('../services/onboarding.service');
+    const { upsertGlobalProfile } = require('../services/profile.service');
+    const onboarding = await getOnboardingState(ctx.from.id);
     
     if (!onboarding || onboarding.step !== 5) {
       return ctx.reply('❌ Неверный шаг онбординга. Начните заново.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
     }
 
+    const updatedData = { ...onboarding.data };
     if (role !== 'skip') {
-      if (!onboarding.data.roles) {
-        onboarding.data.roles = [];
+      if (!updatedData.roles) {
+        updatedData.roles = [];
       }
-      if (!onboarding.data.roles.includes(role)) {
-        onboarding.data.roles.push(role);
+      if (!updatedData.roles.includes(role)) {
+        updatedData.roles.push(role);
       }
     }
 
-    onboarding.step = 6;
-    onboardingState.set(ctx.from.id, onboarding);
+    try {
+      // Mark onboarding as completed first (before clearing)
+      await updateOnboardingState(ctx.from.id, { completedAt: new Date() });
+      
+      // Save to global profile (this will clear onboarding state internally)
+      await upsertGlobalProfile({
+        telegramId: String(ctx.from.id),
+        data: updatedData,
+      });
 
-    // Show list of conferences user is already in
-    const user = await ensureUserFromTelegram(ctx.from);
-    const conferences = await listConferencesForUser(user);
-    
-    if (!conferences.length) {
+      userState.delete(ctx.from.id);
+
       await ctx.editMessageText(
-        '❌ Вы не участвуете ни в одной конференции.\n\n' +
-        'Сначала присоединитесь к конференции через меню "➕ Присоединиться".',
-        { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
+        '✅ Профиль заполнен!\n\n' +
+        'Теперь тебе будет проще находить подходящих людей для нетворкинга.\n\n' +
+        '💡 При присоединении к конференции твой профиль будет автоматически использован.',
+        await getMainMenu(ctx.from)
       );
-      clearUserState(ctx.from.id);
-      return;
+    } catch (err) {
+      console.error('Error in onboarding:role', err);
+      let errorMsg = '❌ Ошибка при сохранении профиля.';
+      if (err.message === 'ONBOARDING_STATE_NOT_FOUND') {
+        // State was already cleared, but profile might be saved - check and show success
+        const { getGlobalProfile } = require('../services/profile.service');
+        const globalProfile = await getGlobalProfile(ctx.from.id);
+        if (globalProfile && globalProfile.onboardingCompleted) {
+          // Profile was saved successfully, just state was already cleared
+          userState.delete(ctx.from.id);
+          await ctx.editMessageText(
+            '✅ Профиль заполнен!\n\n' +
+            'Теперь тебе будет проще находить подходящих людей для нетворкинга.\n\n' +
+            '💡 При присоединении к конференции твой профиль будет автоматически использован.',
+            await getMainMenu(ctx.from)
+          );
+          return;
+        }
+        errorMsg = '❌ Состояние онбординга не найдено. Начните заполнение профиля заново.';
+      }
+      await ctx.editMessageText(errorMsg, await getMainMenu(ctx.from));
+      await clearUserState(ctx.from.id);
     }
-
-    await ctx.editMessageText(
-      '✅ Отлично!\n\n' +
-      'Шаг 6/6: Выбери конференцию для завершения профиля:',
-      getConferenceSelectionMenu(conferences, 'onboarding:select_conf')
-    );
   });
 
   bot.action(/^onboarding:select_conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    const conferenceCode = ctx.match[1];
-    const onboarding = onboardingState.get(ctx.from.id);
-    
-    if (!onboarding || onboarding.step !== 6) {
-      return ctx.answerCbQuery('Онбординг не активен или неверный шаг.');
-    }
-
-    try {
-      const { Conference } = require('../models/conference');
-      const { getConferenceIdByCode } = require('../lib/conference-helper');
-      const conferenceId = await getConferenceIdByCode(conferenceCode);
-      const conference = await Conference.findById(conferenceId);
-      
-      if (!conference) {
-        return ctx.editMessageText('❌ Конференция не найдена.', await getMainMenu(ctx.from));
-      }
-
-      await upsertProfileForConference({
-        telegramId: String(ctx.from.id),
-        conferenceId: conference._id,
-        data: onboarding.data,
-      });
-
-      clearUserState(ctx.from.id);
-
-      await ctx.editMessageText(
-        `✅ Профиль для конференции "${conference.title}" заполнен!\n\nТеперь тебе будет проще находить подходящих людей для нетворкинга.`,
-        await getMainMenu(ctx.from)
-      );
-    } catch (err) {
-      console.error('Error in onboarding:select_conf', err);
-      await ctx.editMessageText('❌ Ошибка при завершении профиля.', await getMainMenu(ctx.from));
-      clearUserState(ctx.from.id);
-    }
+    // This handler is kept for backward compatibility but is no longer used
+    // Onboarding now saves to global profile, not conference-specific profile
+    await ctx.answerCbQuery('Этот шаг больше не используется. Профиль теперь глобальный.');
   });
 
   bot.action('menu:find_participants', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -305,7 +483,7 @@ function initBot() {
   bot.action(/^find:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const conferenceCode = ctx.match[1];
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     // Show filter menu instead of asking for text input
     await ctx.editMessageText(
       `🔍 Поиск участников в конференции\n\nВыберите фильтр:`,
@@ -327,7 +505,7 @@ function initBot() {
         limit: 20,
       });
 
-      clearUserState(ctx.from.id);
+      await clearUserState(ctx.from.id);
 
       if (!profiles.length) {
         return ctx.editMessageText(
@@ -336,63 +514,28 @@ function initBot() {
         );
       }
 
-      const searcher = await ensureUserFromTelegram(ctx.from);
-      const { UserProfile } = require('../models/userProfile');
-      const { getConferenceIdByCode } = require('../lib/conference-helper');
-      const conferenceId = await getConferenceIdByCode(conferenceCode);
-      const searcherProfile = await UserProfile.findOne({
-        telegramId: searcher.telegramId,
-        conference: conferenceId,
-        isActive: true,
+      const { processSearchFilterResults } = require('../services/handler.service');
+      const result = await processSearchFilterResults({
+        profiles,
+        conferenceCode,
+        searcherTelegramId: ctx.from.id,
+        getSearchFilterMenu,
       });
 
-      const resultText = [];
-      const profilesWithoutUsername = [];
-
-      for (const p of profiles) {
-        const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
-        const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
-        const username = p.username ? `\n  @${p.username}` : '';
-        resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
-        
-        // If no username, add to list for notification
-        if (!p.username && p.telegramId !== searcher.telegramId) {
-          profilesWithoutUsername.push(p);
-        }
-      }
-
       await ctx.editMessageText(
-        `🔍 Найдено участников: ${profiles.length}\n\nФильтр: ${role ? role : 'Все участники'}\n\n${resultText.join('\n\n')}`,
-        getSearchFilterMenu(conferenceCode)
+        `🔍 Найдено участников: ${profiles.length}\n\nФильтр: ${role ? role : 'Все участники'}\n\n${result.text}`,
+        result.menu
       );
-
-      // Send notifications to users without username
-      if (profilesWithoutUsername.length > 0 && searcherProfile) {
-        const { getBot } = require('../telegram/bot');
-        const bot = getBot();
-        const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
-        const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
-        
-        for (const profile of profilesWithoutUsername) {
-          try {
-            const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
-              `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
-            await bot.telegram.sendMessage(profile.telegramId, notificationText);
-          } catch (err) {
-            console.error(`Error sending notification to ${profile.telegramId}:`, err);
-          }
-        }
-      }
     } catch (err) {
-      console.error('Error in search filter', err);
-      await ctx.editMessageText('❌ Ошибка при поиске.', getSearchFilterMenu(conferenceCode));
+      const { handleHandlerError } = require('../services/handler.service');
+      await handleHandlerError(ctx, err, getSearchFilterMenu(conferenceCode));
     }
   });
 
   bot.action(/^search:text:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
     const conferenceCode = ctx.match[1];
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     userState.set(ctx.from.id, { flow: 'search_text', conferenceCode, step: 'enter_text' });
     await ctx.reply(
       `🔍 Поиск по тексту\n\nВведите текст для поиска (интересы, предложения, поиск):`,
@@ -402,7 +545,7 @@ function initBot() {
 
   bot.action('menu:ask_question', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear previous state
+    await clearUserState(ctx.from.id); // Clear previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -428,7 +571,7 @@ function initBot() {
     if (currentState && currentState.flow === 'ask_question') {
       userState.set(ctx.from.id, { flow: 'ask_question', conferenceCode, step: 'enter_question' });
     } else {
-      clearUserState(ctx.from.id);
+      await clearUserState(ctx.from.id);
       userState.set(ctx.from.id, { flow: 'ask_question', conferenceCode, step: 'enter_question' });
     }
     // Use reply instead of editMessageText for text input flows
@@ -440,7 +583,7 @@ function initBot() {
 
   bot.action('menu:polls', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear previous state
+    await clearUserState(ctx.from.id); // Clear previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -462,11 +605,25 @@ function initBot() {
     await ctx.answerCbQuery();
     const conferenceCode = ctx.match[1];
     try {
-      const { polls } = await getPollsForConference({ conferenceCode });
+      // Get user's profile to filter out polls they've already voted in
+      const user = await ensureUserFromTelegram(ctx.from);
+      const { UserProfile } = require('../models/userProfile');
+      const { getConferenceIdByCode } = require('../lib/conference-helper');
+      const conferenceId = await getConferenceIdByCode(conferenceCode);
+      const userProfile = await UserProfile.findOne({
+        telegramId: user.telegramId,
+        conference: conferenceId,
+        isActive: true,
+      });
+      
+      const { polls } = await getPollsForConference({ 
+        conferenceCode,
+        userProfileId: userProfile ? userProfile._id : null
+      });
       
       if (!polls.length) {
         return ctx.editMessageText(
-          '📊 Активных опросов для этой конференции нет.',
+          '📊 Активных опросов для этой конференции нет, или вы уже проголосовали во всех опросах.',
           getUserMenu()
         );
       }
@@ -552,7 +709,7 @@ function initBot() {
   // Speaker menu
   bot.action('menu:speaker', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when navigating to menu
+    await clearUserState(ctx.from.id); // Clear state when navigating to menu
     await ctx.editMessageText('🎤 Меню спикера\n\nВыберите действие:', getSpeakerMenu());
   });
 
@@ -560,7 +717,7 @@ function initBot() {
   // Conference Admin menu
   bot.action('menu:conference_admin', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL state when navigating to menu
+    await clearUserState(ctx.from.id); // Clear ALL state when navigating to menu
     await ctx.editMessageText('⚙️ Меню администратора конференции\n\nВыберите действие:', getConferenceAdminMenu());
   });
 
@@ -630,7 +787,7 @@ function initBot() {
 
   bot.action(/^admin:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when returning to conference management
+    await clearUserState(ctx.from.id); // Clear state when returning to conference management
     const conferenceCode = ctx.match[1];
     const { Conference } = require('../models/conference');
     const conference = await Conference.findOne({ conferenceCode });
@@ -645,7 +802,7 @@ function initBot() {
 
   bot.action(/^admin:polls:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     try {
       const user = await ensureUserFromTelegram(ctx.from);
@@ -734,7 +891,7 @@ function initBot() {
 
   bot.action(/^admin:create_poll:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const conferenceCode = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'create_poll', conferenceCode, step: 'enter_question' });
     // Use reply instead of editMessageText for text input flows
@@ -746,7 +903,7 @@ function initBot() {
 
   bot.action(/^poll:edit:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const pollId = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'edit_poll', pollId, step: 'enter_question' });
     // Use reply instead of editMessageText for text input flows
@@ -799,7 +956,7 @@ function initBot() {
 
   bot.action('menu:admin_polls', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -815,7 +972,7 @@ function initBot() {
 
   bot.action('menu:admin_slides', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -831,7 +988,7 @@ function initBot() {
 
   bot.action('menu:admin_moderate_questions', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -970,7 +1127,7 @@ function initBot() {
 
   bot.action(/^admin:slides:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     try {
       const { Conference } = require('../models/conference');
@@ -1012,7 +1169,7 @@ function initBot() {
   // Set slide - enter URL
   bot.action(/^admin:set_slide:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const conferenceCode = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'set_slide', conferenceCode, step: 'enter_url' });
     // Use reply instead of editMessageText for text input flows
@@ -1074,13 +1231,13 @@ function initBot() {
   // Main Admin menu
   bot.action('menu:main_admin', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when navigating to menu
+    await clearUserState(ctx.from.id); // Clear state when navigating to menu
     await ctx.editMessageText('👑 Меню главного администратора\n\nВыберите действие:', getMainAdminMenu());
   });
 
   bot.action('menu:admin_create_conference', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     userState.set(ctx.from.id, { flow: 'create_conference', step: 'enter_title' });
     // Use reply instead of editMessageText for text input flows
     await ctx.reply(
@@ -1091,7 +1248,7 @@ function initBot() {
 
   bot.action('menu:admin_manage_admins', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     try {
       const user = await ensureUserFromTelegram(ctx.from);
       if (!userIsMainAdmin(user)) {
@@ -1121,7 +1278,7 @@ function initBot() {
   // Show admins for a conference
   bot.action(/^admin:manage_admins:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     try {
       const user = await ensureUserFromTelegram(ctx.from);
@@ -1175,7 +1332,7 @@ function initBot() {
   // Assign admin - enter telegram ID
   bot.action(/^admin:assign_admin:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'assign_admin', conferenceCode, step: 'enter_telegram_id' });
     await ctx.reply(
@@ -1187,7 +1344,7 @@ function initBot() {
   // Revoke admin - select from list
   bot.action(/^admin:revoke_admin:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const conferenceCode = ctx.match[1];
     try {
       const user = await ensureUserFromTelegram(ctx.from);
@@ -1287,7 +1444,26 @@ function initBot() {
 
   bot.action('menu:admin_stats', async (ctx) => {
     await ctx.answerCbQuery();
-    await ctx.editMessageText('📊 Статистика системы\n\n(Функция в разработке)', getMainAdminMenu());
+    try {
+      const { getOnboardingStatistics, formatOnboardingStatistics } = require('../services/onboarding.service');
+      const stats = await getOnboardingStatistics();
+      const formatted = formatOnboardingStatistics(stats);
+      await ctx.editMessageText(formatted, getMainAdminMenu());
+    } catch (err) {
+      console.error('Error in menu:admin_stats', err);
+      await ctx.editMessageText('❌ Ошибка при получении статистики.', getMainAdminMenu());
+    }
+  });
+
+  // ========== CANCEL COMMAND ==========
+  bot.command('cancel', async (ctx) => {
+    await clearUserState(ctx.from.id);
+    await ctx.reply('✅ Действие отменено.', await getMainMenu(ctx.from));
+  });
+
+  bot.hears(/^(отмена|cancel)$/i, async (ctx) => {
+    await clearUserState(ctx.from.id);
+    await ctx.reply('✅ Действие отменено.', await getMainMenu(ctx.from));
   });
 
   // ========== REPLY KEYBOARD HANDLERS ==========
@@ -1319,7 +1495,7 @@ function initBot() {
   });
 
   bot.hears('➕ Присоединиться', async (ctx) => {
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     userState.set(ctx.from.id, { flow: 'join_conference' });
     await ctx.reply(
       '➕ Присоединение к конференции\n\nВведите код конференции:',
@@ -1328,12 +1504,13 @@ function initBot() {
   });
 
   bot.hears('👤 Профиль', async (ctx) => {
-    clearUserState(ctx.from.id); // Clear ALL previous state
-    onboardingState.set(ctx.from.id, { step: 1, data: {} });
+    await clearUserState(ctx.from.id); // Clear ALL previous state
+    const { createOnboardingState } = require('../services/onboarding.service');
+    await createOnboardingState(ctx.from.id);
     await ctx.reply(
       '👤 Заполнение профиля\n\n' +
       '📋 Это займёт всего 2-3 минуты. Мы поможем тебе найти интересных людей на конференции!\n\n' +
-      'Шаг 1/6: Введите ваше имя и фамилию (например: Иван Иванов):',
+      'Шаг 1/5: Введите ваше имя и фамилию (например: Иван Иванов):',
       { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } }
     );
   });
@@ -1387,7 +1564,7 @@ function initBot() {
   
   bot.action(/^admin:edit_conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const conferenceCode = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'edit_conference', conferenceCode, step: 'enter_title' });
     // Use reply instead of editMessageText for text input flows
@@ -1467,7 +1644,7 @@ function initBot() {
   // The first handler at line 442 should handle this, but if this is called, clear state too
   bot.action(/^admin:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when returning to conference management
+    await clearUserState(ctx.from.id); // Clear state when returning to conference management
     const conferenceCode = ctx.match[1];
     const { Conference } = require('../models/conference');
     const conference = await Conference.findOne({ conferenceCode });
@@ -1628,7 +1805,7 @@ function initBot() {
   
   bot.action('menu:speaker_questions', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -1672,7 +1849,7 @@ function initBot() {
 
   bot.action(/^speaker:answer:(.+):(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const [, conferenceCode, questionId] = ctx.match;
     userState.set(ctx.from.id, { flow: 'answer_question', conferenceCode, questionId, step: 'enter_answer' });
     // Use reply instead of editMessageText for text input flows
@@ -1686,7 +1863,7 @@ function initBot() {
   
   bot.action('menu:speaker_polls', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state
+    await clearUserState(ctx.from.id); // Clear ALL previous state
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -1703,7 +1880,7 @@ function initBot() {
 
   bot.action(/^speaker:polls:conf:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear state when navigating to polls list
+    await clearUserState(ctx.from.id); // Clear state when navigating to polls list
     const conferenceCode = ctx.match[1];
     try {
       const user = await ensureUserFromTelegram(ctx.from);
@@ -1749,7 +1926,7 @@ function initBot() {
 
   bot.action(/^speaker:create_poll:(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const conferenceCode = ctx.match[1];
     userState.set(ctx.from.id, { flow: 'create_poll', conferenceCode, step: 'enter_question' });
     // Use reply instead of editMessageText for text input flows
@@ -1768,7 +1945,7 @@ function initBot() {
       const { speakers } = await listSpeakers({ conferenceCode });
       if (speakers.length === 0) {
         // No speakers, ask general question
-        clearUserState(ctx.from.id); // Clear previous state
+        await clearUserState(ctx.from.id); // Clear previous state
         userState.set(ctx.from.id, { flow: 'ask_question', conferenceCode, step: 'enter_question', targetSpeaker: null });
         // Use reply instead of editMessageText for text input flows
         await ctx.reply(
@@ -1790,7 +1967,7 @@ function initBot() {
 
   bot.action(/^ask:speaker:(.+):(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
+    await clearUserState(ctx.from.id); // Clear ALL previous state before setting new one
     const [, conferenceCode, targetId] = ctx.match;
     const targetSpeaker = targetId === 'all' ? null : targetId;
     userState.set(ctx.from.id, { flow: 'ask_question', conferenceCode, step: 'enter_question', targetSpeaker });
@@ -1804,7 +1981,7 @@ function initBot() {
   
   bot.action('menu:meetings', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -1838,7 +2015,12 @@ function initBot() {
       const { getConferenceIdByCode } = require('../lib/conference-helper');
       const conferenceId = await getConferenceIdByCode(conferenceCode);
       const myProfile = await UserProfile.findOne({ telegramId: user.telegramId, conference: conferenceId });
-      const otherProfiles = profiles.filter((p) => p._id.toString() !== myProfile._id.toString());
+      
+      // Filter out current user's profile if it exists
+      let otherProfiles = profiles;
+      if (myProfile) {
+        otherProfiles = profiles.filter((p) => p._id.toString() !== myProfile._id.toString());
+      }
       
       if (!otherProfiles.length) {
         return ctx.editMessageText('❌ Нет других участников для встречи.', getMeetingMenu(conferenceCode));
@@ -1854,13 +2036,84 @@ function initBot() {
     }
   });
 
+  // Handle new format: meeting:select:PROFILE_ID
+  bot.action(/^meeting:select:(.+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    await clearUserState(ctx.from.id);
+    const recipientProfileId = ctx.match[1];
+    
+    try {
+      // Get profile to retrieve conferenceCode
+      const { UserProfile } = require('../models/userProfile');
+      const profile = await UserProfile.findById(recipientProfileId).populate('conference', 'conferenceCode');
+      
+      if (!profile || !profile.conference) {
+        return ctx.editMessageText('❌ Участник не найден.', await getMainMenu(ctx.from));
+      }
+      
+      const conferenceCode = profile.conference.conferenceCode || profile.conference;
+      userState.set(ctx.from.id, { flow: 'request_meeting', conferenceCode, recipientProfileId, step: 'enter_date' });
+      await ctx.editMessageText(
+        '🤝 Запрос встречи\n\n📅 Выберите дату встречи:',
+        getMeetingDateMenu(conferenceCode)
+      );
+    } catch (err) {
+      console.error('Error in meeting:select', err);
+      await ctx.editMessageText('❌ Ошибка при выборе участника.', await getMainMenu(ctx.from));
+    }
+  });
+
+  // Keep old format for backward compatibility
   bot.action(/^meeting:select_participant:(.+):(.+)$/, async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const [, conferenceCode, recipientProfileId] = ctx.match;
-    userState.set(ctx.from.id, { flow: 'request_meeting', conferenceCode, recipientProfileId, step: 'enter_time' });
-    await ctx.reply(
-      '🤝 Запрос встречи\n\nВведите дату и время встречи в формате: ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 25.12.2024 14:30',
+    userState.set(ctx.from.id, { flow: 'request_meeting', conferenceCode, recipientProfileId, step: 'enter_date' });
+    await ctx.editMessageText(
+      '🤝 Запрос встречи\n\n📅 Выберите дату встречи:',
+      getMeetingDateMenu(conferenceCode)
+    );
+  });
+
+  // Handle date selection for meetings
+  bot.action(/^meeting:date:(.+):(today|tomorrow|nextweek|manual)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const [, conferenceCode, dateOption] = ctx.match;
+    const state = userState.get(ctx.from.id);
+    
+    if (!state || state.flow !== 'request_meeting' || state.step !== 'enter_date') {
+      return ctx.reply('❌ Неверное состояние. Начните заново.', await getMainMenu(ctx.from));
+    }
+
+    let selectedDate;
+    if (dateOption === 'today') {
+      selectedDate = new Date();
+    } else if (dateOption === 'tomorrow') {
+      selectedDate = new Date();
+      selectedDate.setDate(selectedDate.getDate() + 1);
+    } else if (dateOption === 'nextweek') {
+      selectedDate = new Date();
+      selectedDate.setDate(selectedDate.getDate() + 7);
+    } else if (dateOption === 'manual') {
+      userState.set(ctx.from.id, { ...state, step: 'enter_date_manual' });
+      await ctx.editMessageText(
+        '📅 Введите дату в формате ДД.ММ.ГГГГ или ДД.ММ\nНапример: 25.12.2024 или 25.12',
+        { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${conferenceCode}` }]] } }
+      );
+      return;
+    }
+
+    selectedDate.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    if (selectedDate < today) {
+      return ctx.editMessageText('❌ Нельзя выбрать прошедшую дату.', getMeetingDateMenu(conferenceCode));
+    }
+
+    userState.set(ctx.from.id, { ...state, selectedDate: selectedDate.toISOString(), step: 'enter_time' });
+    await ctx.editMessageText(
+      `✅ Дата выбрана: ${selectedDate.toLocaleDateString('ru-RU')}\n\n⏰ Введите время встречи в формате ЧЧ:ММ\nНапример: 14:30`,
       { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${conferenceCode}` }]] } }
     );
   });
@@ -1883,7 +2136,11 @@ function initBot() {
       );
     } catch (err) {
       console.error('Error in meeting:list', err);
-      await ctx.editMessageText('❌ Ошибка.', getUserMenu());
+      let errorMsg = '❌ Ошибка.';
+      if (err.message === 'NOT_IN_CONFERENCE') {
+        errorMsg = '❌ Сначала присоединитесь к этой конференции через кнопку "➕ Присоединиться".';
+      }
+      await ctx.editMessageText(errorMsg, getUserMenu());
     }
   });
 
@@ -2049,7 +2306,11 @@ function initBot() {
       );
     } catch (err) {
       console.error('Error in meeting:slots', err);
-      await ctx.editMessageText('❌ Ошибка при получении слотов.', getUserMenu());
+      let errorMsg = '❌ Ошибка при получении слотов.';
+      if (err.message === 'NOT_IN_CONFERENCE') {
+        errorMsg = '❌ Сначала присоединитесь к этой конференции через кнопку "➕ Присоединиться".';
+      }
+      await ctx.editMessageText(errorMsg, getUserMenu());
     }
   });
 
@@ -2094,7 +2355,7 @@ function initBot() {
   
   bot.action('menu:admin_report', async (ctx) => {
     await ctx.answerCbQuery();
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
     const user = await ensureUserFromTelegram(ctx.from);
     const conferences = await listConferencesForUser(user);
     
@@ -2158,16 +2419,20 @@ function initBot() {
 
     // Cancel flows - check this first
     if (text.toLowerCase() === 'отмена' || text.toLowerCase() === 'cancel' || text.toLowerCase() === '/cancel') {
-      clearUserState(ctx.from.id);
+      await clearUserState(ctx.from.id);
       await ctx.reply('✅ Текущее действие отменено.', await getMainMenu(ctx.from));
       return;
     }
 
     // Check if user has any active state
-    // Priority: userState first (more recent actions), then onboardingState
+    // Priority: userState first (more recent actions), then onboardingState from DB
     const state = userState.get(ctx.from.id);
-    const onboarding = onboardingState.get(ctx.from.id);
-
+    const { getOnboardingState } = require('../services/onboarding.service');
+    let onboarding = await getOnboardingState(ctx.from.id);
+    // Only consider active onboarding (not completed)
+    if (onboarding && onboarding.completedAt) {
+      onboarding = null;
+    }
 
     // If no state, ignore the text (user might be trying to use a command)
     if (!state && !onboarding) {
@@ -2185,176 +2450,46 @@ function initBot() {
     // Onboarding flow - only if no userState is active
     if (onboarding && !state) {
       try {
-        if (onboarding.step === 1) {
-          const parts = text.trim().split(/\s+/);
-          if (parts.length < 1) {
-            await ctx.reply('Пожалуйста, введите хотя бы имя.');
-            return;
-          }
-          const firstName = parts[0];
-          const lastName = parts.slice(1).join(' ') || ''; // Allow empty lastName
+        const { processOnboardingStep } = require('../services/handler.service');
+        const result = await processOnboardingStep({
+          step: onboarding.step,
+          text,
+          onboardingData: onboarding.data,
+          telegramUser: ctx.from,
+        });
 
-          // Validate only firstName if lastName is empty
-          if (lastName) {
-            validate({ firstName, lastName }, userProfileSchema);
+        if (!result.shouldContinue) {
+          if (result.response) {
+            await ctx.reply(result.response);
+          }
+          if (result.clearState) {
+            await clearUserState(ctx.from.id);
+          }
+          return;
+        }
+
+        // Update onboarding state in database
+        const { updateOnboardingState } = require('../services/onboarding.service');
+        await updateOnboardingState(ctx.from.id, {
+          step: result.nextStep,
+          data: result.data,
+        });
+
+        if (result.response) {
+          if (typeof result.response === 'string') {
+            await ctx.reply(result.response);
           } else {
-            validate({ firstName }, userProfileSchema);
+            await ctx.reply(result.response.text, result.response.menu);
           }
-
-          onboarding.data.firstName = firstName;
-          onboarding.data.lastName = lastName;
-          onboarding.step = 2;
-
-          await ctx.reply(
-            '✅ Отлично!\n\n' +
-            'Шаг 2/6: Напиши свои интересы через запятую (например: AI, Web3, Product).\n' +
-            '💡 Это поможет другим участникам найти тебя по интересам.\n' +
-            'Если не хочешь указывать — напиши "-".'
-          );
-          return;
         }
-
-        if (onboarding.step === 2) {
-          let interests = [];
-          if (text.trim() !== '-' && text.trim() !== '') {
-            interests = text
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-          }
-
-          if (interests.length) {
-            try {
-              validate({ interests }, userProfileSchema);
-              onboarding.data.interests = interests;
-            } catch (validationErr) {
-              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации интересов';
-              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
-              return;
-            }
-          }
-
-          onboarding.step = 3;
-          await ctx.reply(
-            '✅ Отлично!\n\n' +
-            'Шаг 3/6: Что ты предлагаешь другим участникам? Напиши 1–3 пункта через запятую.\n' +
-            'Например: консалтинг по маркетингу, инвестиции, партнёрства.\n' +
-            '💡 Это поможет людям понять, чем ты можешь быть полезен.\n' +
-            'Если хочешь пропустить — напиши "-".'
-          );
-          return;
-        }
-
-        if (onboarding.step === 3) {
-          let offerings = [];
-          if (text.trim() !== '-' && text.trim() !== '') {
-            offerings = text
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-          }
-
-          if (offerings.length) {
-            try {
-              validate({ offerings }, userProfileSchema);
-              onboarding.data.offerings = offerings;
-            } catch (validationErr) {
-              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации предложений';
-              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
-              return;
-            }
-          }
-
-          onboarding.step = 4;
-          await ctx.reply(
-            '✅ Отлично!\n\n' +
-            'Шаг 4/6: Что ты ищешь на конференции? Напиши 1–3 пункта через запятую.\n' +
-            'Например: партнёры, ментор, инвестор.\n' +
-            '💡 Это поможет найти людей, которые могут помочь тебе.\n' +
-            'Если хочешь пропустить — напиши "-".'
-          );
-          return;
-        }
-
-        if (onboarding.step === 4) {
-          let lookingFor = [];
-          if (text.trim() !== '-' && text.trim() !== '') {
-            lookingFor = text
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-          }
-
-          if (lookingFor.length) {
-            try {
-              validate({ lookingFor }, userProfileSchema);
-              onboarding.data.lookingFor = lookingFor;
-            } catch (validationErr) {
-              const errorMsg = validationErr.message?.replace('VALIDATION_ERROR: ', '') || 'Ошибка валидации пунктов поиска';
-              await ctx.reply(`❌ ${errorMsg}\n\nПопробуй ещё раз или отправь "-" чтобы пропустить.`);
-              return;
-            }
-          }
-
-          onboarding.step = 5;
-          await ctx.reply(
-            '✅ Отлично!\n\n' +
-            'Шаг 5/6: Выбери свою роль на конференции.\n' +
-            '💡 Это поможет другим участникам найти тебя по роли.\n' +
-            '⚠️ Роль "Спикер" назначается только администратором конференции.\n\n' +
-            'Выбери роль:',
-            Markup.inlineKeyboard([
-              [{ text: '💰 Инвестор', callback_data: 'onboarding:role:investor' }],
-              [{ text: '👤 Участник', callback_data: 'onboarding:role:participant' }],
-              [{ text: '📋 Организатор', callback_data: 'onboarding:role:organizer' }],
-              [{ text: '⏭️ Пропустить', callback_data: 'onboarding:role:skip' }],
-            ])
-          );
-          return;
-        }
-
-        if (onboarding.step === 6) {
-          // Show list of conferences user is already in
-          const user = await ensureUserFromTelegram(ctx.from);
-          const conferences = await listConferencesForUser(user);
-          
-          if (!conferences.length) {
-            await ctx.reply(
-              '❌ Вы не участвуете ни в одной конференции.\n\n' +
-              'Сначала присоединитесь к конференции через меню "➕ Присоединиться".',
-              await getMainMenu(ctx.from)
-            );
-            clearUserState(ctx.from.id);
-            return;
-          }
-
-          // Store onboarding data temporarily and show conference selection
-          onboarding.step = 7; // New step for conference selection
-          onboardingState.set(ctx.from.id, onboarding);
-          
-          await ctx.reply(
-            '✅ Отлично!\n\n' +
-            'Шаг 6/6: Выбери конференцию для завершения профиля:',
-            getConferenceSelectionMenu(conferences, 'onboarding:select_conf')
-          );
-          return;
-        }
-
-        clearUserState(ctx.from.id);
-        await ctx.reply('Онбординг сброшен. Можешь запустить его снова через меню.');
       } catch (err) {
         console.error('Error in onboarding flow', err);
-        let errorMsg = '❌ Произошла ошибка.';
-        
-        if (err.message && err.message.startsWith('VALIDATION_ERROR:')) {
-          errorMsg = `❌ Ошибка валидации: ${err.message.replace('VALIDATION_ERROR: ', '')}\n\nПопробуй ещё раз или отправь "отмена" для выхода.`;
-        } else if (err.message === 'CONFERENCE_NOT_FOUND') {
-          errorMsg = '❌ Конференция не найдена. Проверь код и попробуй ещё раз.\n\nИли отправь "отмена" для выхода.';
-        } else if (err.message && err.message.includes('Invalid type')) {
-          errorMsg = '❌ Неверный формат данных. Пожалуйста, следуйте инструкциям.\n\nИли отправь "отмена" для выхода.';
+        const { formatErrorMessage } = require('../services/handler.service');
+        let errorMsg = formatErrorMessage(err);
+        if (err.message && err.message.includes('Invalid type')) {
+          errorMsg = '❌ Неверный формат данных. Пожалуйста, следуйте инструкциям.';
         }
-        
-        await ctx.reply(errorMsg);
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2366,18 +2501,18 @@ function initBot() {
           telegramUser: ctx.from,
           code: text,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Вы присоединились к конференции "${conference.title}"!\n\nКод: ${conference.conferenceCode}`,
           await getMainMenu(ctx.from)
         );
       } catch (err) {
         console.error('Error in join_conference flow', err);
-        let errorMsg = '❌ Не удалось присоединиться.\n\nОтправь "отмена" для выхода.';
+        let errorMsg = '❌ Не удалось присоединиться.';
         if (err.message === 'CONFERENCE_NOT_FOUND') {
-          errorMsg = '❌ Конференция не найдена или завершена.\n\nОтправь "отмена" для выхода.';
+          errorMsg = '❌ Конференция не найдена или завершена.';
         }
-        await ctx.reply(errorMsg);
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2394,7 +2529,7 @@ function initBot() {
           limit: 20,
         });
 
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
 
         if (!profiles.length) {
           return ctx.reply(
@@ -2403,57 +2538,19 @@ function initBot() {
           );
         }
 
-        const searcher = await ensureUserFromTelegram(ctx.from);
-        const { getConferenceIdByCode } = require('../lib/conference-helper');
-        const conferenceId = await getConferenceIdByCode(state.conferenceCode);
-        const searcherProfile = await UserProfile.findOne({
-          telegramId: searcher.telegramId,
-          conference: conferenceId,
-          isActive: true,
+        const { processTextSearchResults } = require('../services/handler.service');
+        const result = await processTextSearchResults({
+          profiles,
+          searchText,
+          conferenceCode: state.conferenceCode,
+          searcherTelegramId: ctx.from.id,
+          getSearchFilterMenu: () => ({ reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }),
         });
 
-        const resultText = [];
-        const profilesWithoutUsername = [];
-
-        for (const p of profiles) {
-          const roles = p.roles && p.roles.length > 0 ? ` (${p.roles.join(', ')})` : '';
-          const interests = p.interests && p.interests.length > 0 ? `\n  Интересы: ${p.interests.join(', ')}` : '';
-          const username = p.username ? `\n  @${p.username}` : '';
-          resultText.push(`${resultText.length + 1}. ${p.firstName || ''} ${p.lastName || ''}${username}${roles}${interests}`);
-          
-          // If no username, add to list for notification
-          if (!p.username && p.telegramId !== searcher.telegramId) {
-            profilesWithoutUsername.push(p);
-          }
-        }
-
-        await ctx.reply(
-          `🔍 Найдено участников: ${profiles.length}\n\nЗапрос: "${searchText}"\n\n${resultText.join('\n\n')}`,
-          { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
-        );
-
-        // Send notifications to users without username
-        if (profilesWithoutUsername.length > 0 && searcherProfile) {
-          const bot = getBot();
-          const searcherName = `${searcherProfile.firstName || ''} ${searcherProfile.lastName || ''}`.trim() || 'Участник';
-          const searcherUsername = searcherProfile.username ? `@${searcherProfile.username}` : null;
-          
-          for (const profile of profilesWithoutUsername) {
-            try {
-              const notificationText = `👋 ${searcherName}${searcherUsername ? ` (${searcherUsername})` : ''} ищет участников в конференции и хотел бы с вами связаться.\n\n` +
-                `💡 Добавьте username в свой профиль Telegram, чтобы другие участники могли с вами связаться напрямую.`;
-              await bot.telegram.sendMessage(profile.telegramId, notificationText);
-            } catch (err) {
-              console.error(`Error sending notification to ${profile.telegramId}:`, err);
-            }
-          }
-        }
+        await ctx.reply(result.text, result.menu);
       } catch (err) {
-        console.error('Error in search_text flow', err);
-        await ctx.reply(
-          '❌ Ошибка при поиске.',
-          { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад к фильтрам', callback_data: `find:conf:${state.conferenceCode}` }]] } }
-        );
+        const { handleHandlerError } = require('../services/handler.service');
+        await handleHandlerError(ctx, err);
       }
       return;
     }
@@ -2467,7 +2564,7 @@ function initBot() {
           text,
           targetSpeakerProfileId: state.targetSpeaker || null,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         const targetText = state.targetSpeaker ? ' спикеру' : '';
         await ctx.reply(
           `✅ Ваш вопрос${targetText} отправлен модераторам конференции "${conference.title}".`,
@@ -2475,11 +2572,13 @@ function initBot() {
         );
       } catch (err) {
         console.error('Error in ask_question flow', err);
-        let errorMsg = '❌ Не удалось отправить вопрос.\n\nОтправь "отмена" для выхода.';
-        if (err.message && err.message.startsWith('VALIDATION_ERROR:')) {
-          errorMsg = `❌ ${err.message.replace('VALIDATION_ERROR: ', '')}\n\nОтправь "отмена" для выхода.`;
+        let errorMsg = '❌ Не удалось отправить вопрос.';
+        if (err.message === 'NOT_IN_CONFERENCE') {
+          errorMsg = '❌ Сначала присоединитесь к этой конференции через кнопку "➕ Присоединиться".';
+        } else if (err.message && err.message.startsWith('VALIDATION_ERROR:')) {
+          errorMsg = `❌ ${err.message.replace('VALIDATION_ERROR: ', '')}`;
         }
-        await ctx.reply(errorMsg);
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2494,7 +2593,7 @@ function initBot() {
           questionId: state.questionId,
           answerText: text,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Ваш ответ на вопрос сохранён:\n\n"${question.text}"\n\nОтвет: ${question.answer}`,
           await getMainMenu(ctx.from)
@@ -2524,7 +2623,7 @@ function initBot() {
         return;
       } catch (err) {
         console.error('Error in edit_conference flow', err);
-        await ctx.reply('❌ Ошибка.\n\nОтправь "отмена" для выхода.');
+        await ctx.reply('❌ Ошибка.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2542,7 +2641,7 @@ function initBot() {
           requestedByUser: user,
           payload,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Конференция "${conference.title}" обновлена.`,
           await getMainMenu(ctx.from)
@@ -2568,7 +2667,7 @@ function initBot() {
         return;
       } catch (err) {
         console.error('Error in create_poll flow', err);
-        await ctx.reply('❌ Ошибка.\n\nОтправь "отмена" для выхода.');
+        await ctx.reply('❌ Ошибка.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2578,11 +2677,11 @@ function initBot() {
         const user = await ensureUserFromTelegram(ctx.from);
         const options = text.split(',').map((s) => s.trim()).filter(Boolean);
         if (options.length < 2) {
-          await ctx.reply('❌ Нужно минимум 2 варианта ответа.\n\nОтправь "отмена" для выхода.');
+          await ctx.reply('❌ Нужно минимум 2 варианта ответа.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: cancelCallback }]] } });
           return;
         }
         if (options.length > 10) {
-          await ctx.reply('❌ Максимум 10 вариантов ответа.\n\nОтправь "отмена" для выхода.');
+          await ctx.reply('❌ Максимум 10 вариантов ответа.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: cancelCallback }]] } });
           return;
         }
         const { poll } = await createPoll({
@@ -2593,7 +2692,7 @@ function initBot() {
             options: options.map((text) => ({ text })),
           },
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Опрос создан:\n\n${poll.question}\n\nВарианты: ${options.join(', ')}`,
           await getMainMenu(ctx.from)
@@ -2604,7 +2703,7 @@ function initBot() {
         if (err.message && err.message.startsWith('VALIDATION_ERROR:')) {
           errorMsg = `❌ ${err.message.replace('VALIDATION_ERROR: ', '')}`;
         }
-        await ctx.reply(errorMsg + '\n\nОтправь "отмена" для выхода.');
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `ask:conf:${state.conferenceCode}` }]] } });
       }
       return;
     }
@@ -2629,14 +2728,17 @@ function initBot() {
           pollId: joinState.pollId,
           payload,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Опрос обновлён.`,
           await getMainMenu(ctx.from)
         );
       } catch (err) {
         console.error('Error in edit_poll flow', err);
-        await ctx.reply('❌ Ошибка при обновлении опроса.\n\nОтправь "отмена" для выхода.');
+        const cancelCallback = state.conferenceCode ? 
+          `admin:polls:${state.conferenceCode}` : 
+          `speaker:polls:conf:${state.conferenceCode}`;
+        await ctx.reply('❌ Ошибка при обновлении опроса.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: cancelCallback }]] } });
       }
       return;
     }
@@ -2647,13 +2749,13 @@ function initBot() {
         const user = await ensureUserFromTelegram(ctx.from);
         if (!userIsMainAdmin(user)) {
           await ctx.reply('❌ Доступ запрещён.');
-          clearUserState(ctx.from.id);
+          await clearUserState(ctx.from.id);
           return;
         }
 
         const telegramId = text.trim();
         if (!/^\d+$/.test(telegramId)) {
-          await ctx.reply('❌ Неверный формат Telegram ID. Введите число.\n\nОтправь "отмена" для выхода.');
+          await ctx.reply('❌ Неверный формат Telegram ID. Введите число.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `admin:manage_admins:conf:${state.conferenceCode}` }]] } });
           return;
         }
 
@@ -2663,7 +2765,7 @@ function initBot() {
           targetTelegramId: telegramId,
         });
 
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Пользователь (ID: ${telegramId}) назначен администратором конференции.`,
           { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `admin:manage_admins:conf:${state.conferenceCode}` }]] } }
@@ -2678,7 +2780,7 @@ function initBot() {
         } else if (err.message === 'ACCESS_DENIED') {
           errorMsg = '❌ Доступ запрещён.';
         }
-        await ctx.reply(errorMsg + '\n\nОтправь "отмена" для выхода.');
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `admin:manage_admins:conf:${state.conferenceCode}` }]] } });
       }
       return;
     }
@@ -2697,33 +2799,100 @@ function initBot() {
           url,
           title,
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Слайд обновлён для конференции. Он появится на втором экране.`,
           { reply_markup: { inline_keyboard: [[{ text: '◀️ Назад', callback_data: `admin:slides:${state.conferenceCode}` }]] } }
         );
       } catch (err) {
         console.error('Error in set_slide flow', err);
-        await ctx.reply('❌ Ошибка при установке слайда.\n\nОтправь "отмена" для выхода.');
+        await ctx.reply('❌ Ошибка при установке слайда.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `admin:slides:${state.conferenceCode}` }]] } });
       }
       return;
     }
 
-    // Request meeting flow - enter time
-    if (state && state.flow === 'request_meeting' && state.step === 'enter_time') {
+    // Request meeting flow - enter date manually
+    if (state && state.flow === 'request_meeting' && state.step === 'enter_date_manual') {
       try {
-        // Parse date and time: DD.MM.YYYY HH:MM
-        const match = text.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+        // Parse date: DD.MM.YYYY or DD.MM (assumes current year)
+        let match = text.trim().match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$/);
         if (!match) {
-          await ctx.reply('❌ Неверный формат. Используйте: ДД.ММ.ГГГГ ЧЧ:ММ\nНапример: 25.12.2024 14:30\n\nОтправь "отмена" для выхода.');
+          await ctx.reply('❌ Неверный формат даты. Используйте: ДД.ММ.ГГГГ или ДД.ММ\nНапример: 25.12.2024 или 25.12', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
           return;
         }
 
-        const [, day, month, year, hour, minute] = match;
-        const proposedTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute));
+        const [, day, month, year] = match;
+        const currentYear = new Date().getFullYear();
+        const selectedYear = year ? parseInt(year) : currentYear;
+        const selectedDate = new Date(selectedYear, parseInt(month) - 1, parseInt(day));
+        
+        if (isNaN(selectedDate.getTime())) {
+          await ctx.reply('❌ Неверная дата.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+          return;
+        }
+
+        selectedDate.setHours(0, 0, 0, 0);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        if (selectedDate < today) {
+          await ctx.reply('❌ Нельзя выбрать прошедшую дату.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+          return;
+        }
+
+        userState.set(ctx.from.id, { ...state, selectedDate: selectedDate.toISOString(), step: 'enter_time' });
+        await ctx.reply(
+          `✅ Дата выбрана: ${selectedDate.toLocaleDateString('ru-RU')}\n\n⏰ Введите время встречи в формате ЧЧ:ММ\nНапример: 14:30`,
+          { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } }
+        );
+        return;
+      } catch (err) {
+        console.error('Error in enter_date_manual flow', err);
+        await ctx.reply('❌ Ошибка при обработке даты.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+        return;
+      }
+    }
+
+    // Request meeting flow - enter time (after date was selected)
+    if (state && state.flow === 'request_meeting' && state.step === 'enter_time' && state.selectedDate) {
+      try {
+        // Parse time: HH:MM
+        const match = text.trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!match) {
+          await ctx.reply('❌ Неверный формат времени. Используйте: ЧЧ:ММ\nНапример: 14:30', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+          return;
+        }
+
+        const [, hour, minute] = match;
+        const hourNum = parseInt(hour);
+        const minuteNum = parseInt(minute);
+        
+        if (hourNum < 0 || hourNum > 23 || minuteNum < 0 || minuteNum > 59) {
+          await ctx.reply('❌ Неверное время. Часы: 0-23, минуты: 0-59.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+          return;
+        }
+
+        // Parse the selected date (stored as ISO string)
+        // Important: When we parse an ISO string, it's interpreted as UTC
+        // But we want to interpret user input as local server time
+        // So we need to extract the date components and create a new Date in local timezone
+        const baseDate = new Date(state.selectedDate);
+        
+        // Get date components in local timezone to avoid UTC interpretation issues
+        const year = baseDate.getFullYear();
+        const month = baseDate.getMonth();
+        const day = baseDate.getDate();
+        
+        // Create a new Date in local timezone with the specified date and time
+        // This ensures the time is interpreted as local server time, not UTC
+        const proposedTime = new Date(year, month, day, hourNum, minuteNum, 0, 0);
+        
+        // Log for debugging (can be removed in production)
+        const serverTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        console.log(`[Meeting Time] User input: ${hourNum}:${minuteNum.toString().padStart(2, '0')}, Server TZ: ${serverTZ}, Local: ${proposedTime.toLocaleString('ru-RU', { timeZone: serverTZ })}, UTC: ${proposedTime.toISOString()}`);
 
         if (isNaN(proposedTime.getTime())) {
-          await ctx.reply('❌ Неверная дата или время.\n\nОтправь "отмена" для выхода.');
+          await ctx.reply('❌ Неверная дата или время.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
           return;
         }
 
@@ -2736,7 +2905,7 @@ function initBot() {
           durationMinutes: 30,
         });
 
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Запрос на встречу отправлен!\n\nВремя: ${proposedTime.toLocaleString('ru-RU')}\nДлительность: 30 минут`,
           await getMainMenu(ctx.from)
@@ -2751,7 +2920,58 @@ function initBot() {
         } else if (err.message === 'RECIPIENT_NOT_FOUND') {
           errorMsg = '❌ Получатель не найден.';
         }
-        await ctx.reply(errorMsg + '\n\nОтправь "отмена" для выхода.');
+        await ctx.reply(errorMsg, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: `meeting:request:${state.conferenceCode}` }]] } });
+      }
+      return;
+    }
+
+    // Update profile flow
+    if (state && state.flow === 'update_profile') {
+      try {
+        const { getGlobalProfile, updateGlobalProfile } = require('../services/profile.service');
+        const field = state.field;
+        let updates = {};
+        
+        if (field === 'name') {
+          const parts = text.trim().split(/\s+/);
+          if (parts.length < 1) {
+            await ctx.reply('❌ Пожалуйста, введите хотя бы имя.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
+            return;
+          }
+          const firstName = parts[0];
+          const lastName = parts.slice(1).join(' ') || '';
+          updates = { firstName, lastName };
+        } else if (field === 'interests') {
+          let interests = [];
+          if (text.trim() !== '-' && text.trim() !== '') {
+            interests = text.split(',').map((s) => s.trim()).filter(Boolean);
+          }
+          updates = { interests };
+        } else if (field === 'offerings') {
+          let offerings = [];
+          if (text.trim() !== '-' && text.trim() !== '') {
+            offerings = text.split(',').map((s) => s.trim()).filter(Boolean);
+          }
+          updates = { offerings };
+        } else if (field === 'lookingFor') {
+          let lookingFor = [];
+          if (text.trim() !== '-' && text.trim() !== '') {
+            lookingFor = text.split(',').map((s) => s.trim()).filter(Boolean);
+          }
+          updates = { lookingFor };
+        }
+        
+        await updateGlobalProfile(ctx.from.id, updates);
+        await clearUserState(ctx.from.id);
+        await ctx.reply(
+          `✅ Профиль обновлён!`,
+          await getMainMenu(ctx.from)
+        );
+      } catch (err) {
+        console.error('Error in update_profile flow', err);
+        const { formatErrorMessage } = require('../services/handler.service');
+        const errorMsg = formatErrorMessage(err);
+        await ctx.reply(`❌ ${errorMsg}`, { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main' }]] } });
       }
       return;
     }
@@ -2764,14 +2984,14 @@ function initBot() {
           createdByUser: user,
           payload: { title: text, description: '' },
         });
-        clearUserState(ctx.from.id);
+        await clearUserState(ctx.from.id);
         await ctx.reply(
           `✅ Конференция создана!\n\nНазвание: ${conference.title}\nКод: ${conference.conferenceCode}`,
           await getMainMenu(ctx.from)
         );
       } catch (err) {
         console.error('Error in create_conference flow', err);
-        await ctx.reply('❌ Ошибка при создании конференции.\n\nОтправь "отмена" для выхода.');
+        await ctx.reply('❌ Ошибка при создании конференции.', { reply_markup: { inline_keyboard: [[{ text: '◀️ Отмена', callback_data: 'menu:main_admin' }]] } });
       }
       return;
     }
@@ -2782,7 +3002,7 @@ function initBot() {
       'ℹ️ Не удалось обработать ваш запрос. Состояние сброшено.\n\nИспользуйте меню для выбора действия.',
       await getMainMenu(ctx.from)
     );
-    clearUserState(ctx.from.id);
+    await clearUserState(ctx.from.id);
   });
 
   bot.launch().then(() => {

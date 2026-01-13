@@ -43,6 +43,10 @@ async function generateOrganizerReport({ telegramUser, conferenceCode }) {
   // Get onboarding completion rate
   const completedOnboarding = participants.filter((p) => p.onboardingCompleted).length;
   const onboardingRate = participants.length > 0 ? (completedOnboarding / participants.length) * 100 : 0;
+  
+  // Get detailed onboarding statistics
+  const { getOnboardingStatistics } = require('./onboarding.service');
+  const onboardingStats = await getOnboardingStatistics({ conferenceId: conference._id });
 
   // Get questions stats
   const totalQuestions = await Question.countDocuments({ conference: conferenceId });
@@ -128,6 +132,13 @@ async function generateOrganizerReport({ telegramUser, conferenceCode }) {
       engagedParticipants: engagedParticipants.size,
       engagementRate: Math.round(engagementRate * 10) / 10,
     },
+    onboarding: {
+      totalStarted: onboardingStats.totalStarted,
+      totalCompleted: onboardingStats.totalCompleted,
+      completionRate: onboardingStats.completionRate,
+      abandonmentRate: onboardingStats.abandonmentRate,
+      avgCompletionTimeMinutes: onboardingStats.avgCompletionTimeMinutes,
+    },
   };
 
   return report;
@@ -174,6 +185,13 @@ function formatReportAsText(report) {
     `📈 ВОВЛЕЧЁННОСТЬ`,
     `Активных участников: ${report.engagement.engagedParticipants}`,
     `Уровень вовлечённости: ${report.engagement.engagementRate}%`,
+    ``,
+    `📊 ОНБОРДИНГ`,
+    `Начали: ${report.onboarding.totalStarted}`,
+    `Завершили: ${report.onboarding.totalCompleted}`,
+    `Процент завершения: ${report.onboarding.completionRate}%`,
+    `Процент отказов: ${report.onboarding.abandonmentRate}%`,
+    `Среднее время: ${report.onboarding.avgCompletionTimeMinutes} минут`,
   ];
 
   return lines.filter(Boolean).join('\n');

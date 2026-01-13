@@ -20,7 +20,8 @@ async function searchProfiles({ conferenceCode, role, text, limit = 20 }) {
   const query = {
     conference: conferenceId, // Use ObjectId for all DB queries
     isActive: true,
-    onboardingCompleted: true,
+    // Don't filter by onboardingCompleted - users might have global profile but not conference-specific onboarding
+    // onboardingCompleted: true,
   };
 
   if (role) {

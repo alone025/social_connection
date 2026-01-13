@@ -165,7 +165,7 @@ async function voteInPoll({ telegramUser, pollId, optionId }) {
 /**
  * Get active polls for a conference
  */
-async function getPollsForConference({ conferenceCode }) {
+async function getPollsForConference({ conferenceCode, userProfileId = null }) {
   // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
   const conferenceId = await getConferenceIdByCode(conferenceCode);
   
@@ -180,7 +180,19 @@ async function getPollsForConference({ conferenceCode }) {
     isActive: true,
   }).sort({ createdAt: -1 });
 
-  return { conference, polls };
+  // Filter out polls where user has already voted
+  let filteredPolls = polls;
+  if (userProfileId) {
+    filteredPolls = polls.filter((poll) => {
+      // Check if user has voted in any option of this poll
+      const hasVoted = poll.options.some((option) => 
+        option.voters.some((voterId) => voterId.toString() === userProfileId.toString())
+      );
+      return !hasVoted; // Return polls where user hasn't voted
+    });
+  }
+
+  return { conference, polls: filteredPolls };
 }
 
 /**
