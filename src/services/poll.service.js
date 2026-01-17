@@ -48,6 +48,19 @@ async function createPoll({ moderatorUser, conferenceCode, payload }) {
     throw new Error('ACCESS_DENIED');
   }
 
+  // Check limits
+  const { canCreatePoll } = require('./limit.service');
+  const limitCheck = await canCreatePoll(conferenceId);
+  if (!limitCheck.allowed) {
+    const err = new Error('LIMIT_EXCEEDED');
+    err.details = {
+      limit: limitCheck.limit,
+      current: limitCheck.current,
+      resource: 'polls',
+    };
+    throw err;
+  }
+
   // Validate poll data
   const validated = validate({ ...payload, conferenceCode }, pollSchema);
 

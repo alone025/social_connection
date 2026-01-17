@@ -24,8 +24,14 @@ router.get('/second-screen/:code', async (req, res) => {
       return res.status(404).send('Conference not found.');
     }
     
-    // Use conferenceId (ObjectId) for all internal operations
+    // Check if second screen feature is enabled
+    const { isFeatureEnabled } = require('../services/limit.service');
     const conferenceId = conference._id;
+    const secondScreenEnabled = await isFeatureEnabled('secondScreenEnabled', conferenceId);
+    
+    if (!secondScreenEnabled) {
+      return res.status(403).send('Second Screen feature is not available for this conference. Please upgrade your plan to enable this feature.');
+    }
 
     const html = `
 <!DOCTYPE html>

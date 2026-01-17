@@ -62,6 +62,20 @@ function generateConferenceCode(title) {
 
 async function createConference({ createdByUser, payload }) {
   const { validate, conferenceSchema } = require('../lib/validation');
+  const { canCreateConference } = require('./limit.service');
+  
+  // Check limits
+  const user = await ensureUserFromTelegram(createdByUser);
+  const limitCheck = await canCreateConference(user._id);
+  if (!limitCheck.allowed) {
+    const err = new Error('LIMIT_EXCEEDED');
+    err.details = {
+      limit: limitCheck.limit,
+      current: limitCheck.current,
+      resource: 'conferences',
+    };
+    throw err;
+  }
   
   // Validate input data
   const validated = validate(payload, conferenceSchema);
@@ -86,6 +100,7 @@ async function createConference({ createdByUser, payload }) {
 
 async function joinConference({ telegramUser, code }) {
   const user = await ensureUserFromTelegram(telegramUser);
+  const { canAddParticipant } = require('./limit.service');
 
   const conference = await Conference.findOne({
     conferenceCode: code,
@@ -100,6 +115,25 @@ async function joinConference({ telegramUser, code }) {
     // TODO: add access-code checking
     // For now just disallow joining private conferences without extra logic
     throw new Error('CONFERENCE_PRIVATE');
+  }
+
+  // Check participant limit (only if user is not already a participant)
+  const existingProfile = await UserProfile.findOne({
+    telegramId: String(telegramUser.id),
+    conference: conference._id,
+  });
+
+  if (!existingProfile) {
+    const limitCheck = await canAddParticipant(conference._id);
+    if (!limitCheck.allowed) {
+      const err = new Error('LIMIT_EXCEEDED');
+      err.details = {
+        limit: limitCheck.limit,
+        current: limitCheck.current,
+        resource: 'participants',
+      };
+      throw err;
+    }
   }
 
   // Try to copy from global profile first

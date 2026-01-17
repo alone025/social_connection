@@ -68,6 +68,8 @@ const { secondScreenPageRouter } = require('./second-screen/page');
 const { initMeetingChatSocket } = require('./meeting-chat/socket');
 const { meetingChatPageRouter } = require('./meeting-chat/page');
 const { organizerDashboardPageRouter } = require('./organizer-dashboard/page');
+const { organizerAdminPageRouter } = require('./organizer-dashboard/admin');
+const { organizerApiRouter } = require('./organizer-dashboard/api');
 const { setIO } = require('./lib/realtime');
 
 const PORT = process.env.PORT || 3000;
@@ -77,6 +79,10 @@ async function bootstrap() {
   validateEnvironment();
 
   await connectMongo();
+
+  // Ensure default tariff plans exist
+  const { ensureDefaultTariffPlans } = require('./services/limit.service');
+  await ensureDefaultTariffPlans();
 
   // Start meeting notification scheduler
   startMeetingNotificationScheduler();
@@ -97,8 +103,14 @@ async function bootstrap() {
   // Meeting chat HTML (protected via ?token=...)
   app.use(meetingChatPageRouter);
 
-  // Organizer dashboard HTML (protected via ?key=...&telegramId=...)
+  // Organizer dashboard HTML - Reports only (protected via ?key=...&telegramId=...)
   app.use(organizerDashboardPageRouter);
+
+  // Organizer admin panel HTML - Management interface (protected via ?key=...&telegramId=...)
+  app.use(organizerAdminPageRouter);
+
+  // Organizer dashboard API (protected via ?key=...&telegramId=...)
+  app.use('/organizer-api', organizerApiRouter);
 
   // Protect all second-screen REST API endpoints
   app.use('/conference', requireSecondScreenKey, secondScreenRouter);

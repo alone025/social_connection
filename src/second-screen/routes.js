@@ -14,6 +14,19 @@ router.get('/:code/polls', async (req, res) => {
     // Convert conferenceCode to conferenceId (ObjectId) for consistent DB queries
     const conferenceId = await getConferenceIdByCode(code);
 
+    // Check if second screen and polls features are enabled
+    const { isFeatureEnabled } = require('../services/limit.service');
+    const secondScreenEnabled = await isFeatureEnabled('secondScreenEnabled', conferenceId);
+    const pollsEnabled = await isFeatureEnabled('pollsEnabled', conferenceId);
+    
+    if (!secondScreenEnabled) {
+      return res.status(403).json({ error: 'Second Screen feature is not available for this conference' });
+    }
+    
+    if (!pollsEnabled) {
+      return res.json({ items: [] }); // Return empty if polls disabled
+    }
+
     // Use conferenceId (ObjectId) for all database queries
     const polls = await Poll.find({
       conference: conferenceId,

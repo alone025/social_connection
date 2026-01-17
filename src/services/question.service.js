@@ -57,6 +57,19 @@ async function askQuestion({ telegramUser, conferenceCode, text, targetSpeakerPr
     }
   }
 
+  // Check limits
+  const { canCreateQuestion } = require('./limit.service');
+  const limitCheck = await canCreateQuestion(conferenceId);
+  if (!limitCheck.allowed) {
+    const err = new Error('LIMIT_EXCEEDED');
+    err.details = {
+      limit: limitCheck.limit,
+      current: limitCheck.current,
+      resource: 'questions',
+    };
+    throw err;
+  }
+
   // Use conferenceId (ObjectId) for all DB operations
   const question = new Question({
     conference: conferenceId,
@@ -263,8 +276,8 @@ async function answerQuestion({ speakerUser, conferenceCode, questionId, answerT
   question.answeredBy = speakerProfile._id;
   await question.save();
 
-  // Use conferenceId (ObjectId) for real-time events
-  emitToConference(conferenceId, 'question-answered', {
+  // Use conference._id (ObjectId) for real-time events
+  emitToConference(conference._id, 'question-answered', {
     id: question._id,
     text: question.text,
     answer: question.answer,

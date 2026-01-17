@@ -88,6 +88,21 @@ async function clearUserState(telegramId) {
 
 let botInstance;
 
+/**
+ * Safely edit message text, ignoring "message is not modified" errors
+ */
+async function safeEditMessageText(ctx, text, extra = {}) {
+  try {
+    return await ctx.editMessageText(text, extra);
+  } catch (err) {
+    // Ignore "message is not modified" error - this happens when clicking the same menu item twice
+    if (err.response && err.response.description && err.response.description.includes('message is not modified')) {
+      return; // Silently ignore - message is already up to date
+    }
+    throw err; // Re-throw other errors
+  }
+}
+
 function initBot() {
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -1435,10 +1450,10 @@ function initBot() {
           `• ${c.title}\n  Код: ${c.conferenceCode}\n  Статус: ${c.isEnded ? 'Завершена' : 'Активна'}`
         ).join('\n\n');
 
-      await ctx.editMessageText(`📋 Все конференции:\n\n${text}`, getMainAdminMenu());
+      await safeEditMessageText(ctx, `📋 Все конференции:\n\n${text}`, getMainAdminMenu());
     } catch (err) {
       console.error('Error in menu:admin_all_conferences', err);
-      await ctx.editMessageText('❌ Ошибка.', getMainAdminMenu());
+      await safeEditMessageText(ctx, '❌ Ошибка.', getMainAdminMenu());
     }
   });
 
@@ -2353,6 +2368,47 @@ function initBot() {
 
   // ========== ORGANIZER REPORTS ==========
   
+  bot.action('menu:admin_dashboard', async (ctx) => {
+    await ctx.answerCbQuery();
+    await clearUserState(ctx.from.id);
+    const user = await ensureUserFromTelegram(ctx.from);
+    const conferences = await listConferencesForUser(user);
+    
+    if (!conferences.length) {
+      return await safeEditMessageText(ctx, '❌ У вас нет конференций.', getConferenceAdminMenu());
+    }
+
+    const { getOrganizerAdminUrl, getOrganizerDashboardUrl } = require('./menus');
+    const buttons = [];
+    const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
+    
+    // Generate buttons and text with URLs
+    let text = '🌐 Админ-панель (веб)\n\nВыберите конференцию:\n\n';
+    
+    for (const conf of conferences.filter(c => c && c.conferenceCode)) {
+      const adminUrl = getOrganizerAdminUrl(conf.conferenceCode, ctx.from.id);
+      const reportUrl = getOrganizerDashboardUrl(conf.conferenceCode, ctx.from.id);
+      if (adminUrl) {
+        buttons.push([Markup.button.url(`🔧 ${conf.title} (Управление)`, adminUrl)]);
+        if (reportUrl) {
+          buttons.push([Markup.button.url(`📊 ${conf.title} (Отчёты)`, reportUrl)]);
+        }
+        text += `• ${conf.title}\n  Код: ${conf.conferenceCode}\n`;
+        // if (adminUrl) text += `  🔧 Управление: ${adminUrl}\n`;
+        // if (reportUrl) text += `  📊 Отчёты: ${reportUrl}\n`;
+        text += '\n';
+      } else {
+        console.warn(`Failed to generate admin URL for conference ${conf.conferenceCode}, user ${ctx.from.id}`);
+        text += `• ${conf.title}\n  Код: ${conf.conferenceCode}\n  ❌ Не удалось сгенерировать ссылку\n\n`;
+      }
+    }
+    
+    text += '💡 Используйте кнопки выше для открытия.\n\n';
+    buttons.push([Markup.button.callback('◀️ Назад', 'menu:conference_admin')]);
+    
+    await safeEditMessageText(ctx, text, Markup.inlineKeyboard(buttons));
+  });
+
   bot.action('menu:admin_report', async (ctx) => {
     await ctx.answerCbQuery();
     await clearUserState(ctx.from.id);

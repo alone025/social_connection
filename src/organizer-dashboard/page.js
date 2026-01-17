@@ -238,6 +238,158 @@ router.get('/organizer-dashboard/:code', async (req, res) => {
         font-size: 14px;
         opacity: 0.9;
       }
+      .btn {
+        display: inline-block;
+        padding: 10px 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s, box-shadow 0.2s;
+        text-decoration: none;
+      }
+      .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+      }
+      .btn-secondary {
+        background: #718096;
+      }
+      .btn-danger {
+        background: #e53e3e;
+      }
+      .btn-success {
+        background: #38a169;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 24px;
+        flex-wrap: wrap;
+      }
+      .tab {
+        padding: 12px 24px;
+        background: white;
+        border: none;
+        border-radius: 8px 8px 0 0;
+        cursor: pointer;
+        font-weight: 600;
+        color: #718096;
+        transition: all 0.2s;
+      }
+      .tab.active {
+        background: white;
+        color: #667eea;
+        border-bottom: 3px solid #667eea;
+      }
+      .tab-content {
+        display: none;
+      }
+      .tab-content.active {
+        display: block;
+      }
+      .action-buttons {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+        margin-bottom: 24px;
+      }
+      .table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .table th, .table td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .table th {
+        background: #f7fafc;
+        font-weight: 600;
+        color: #4a5568;
+      }
+      .table tr:hover {
+        background: #f7fafc;
+      }
+      .badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .badge-success { background: #c6f6d5; color: #22543d; }
+      .badge-warning { background: #feebc8; color: #7c2d12; }
+      .badge-danger { background: #fed7d7; color: #742a2a; }
+      .badge-info { background: #bee3f8; color: #2c5282; }
+      .form-group {
+        margin-bottom: 16px;
+      }
+      .form-group label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+        color: #4a5568;
+      }
+      .form-group input, .form-group textarea, .form-group select {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+      .modal {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      }
+      .modal.active {
+        display: flex;
+      }
+      .modal-content {
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        max-width: 600px;
+        width: 90%;
+        max-height: 90vh;
+        overflow-y: auto;
+      }
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+      .modal-header h2 {
+        margin: 0;
+      }
+      .close-btn {
+        background: none;
+        border: none;
+        font-size: 24px;
+        cursor: pointer;
+        color: #718096;
+      }
+      .export-buttons {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
       @media (max-width: 768px) {
         .metrics-grid {
           grid-template-columns: 1fr;
@@ -245,8 +397,24 @@ router.get('/organizer-dashboard/:code', async (req, res) => {
         header h1 {
           font-size: 24px;
         }
+        .table {
+          font-size: 12px;
+        }
+        .tabs {
+          overflow-x: auto;
+        }
       }
     </style>
+    <script>
+      const API_KEY = ${JSON.stringify(providedKey || '')};
+      const TELEGRAM_ID = ${JSON.stringify(telegramId || '')};
+      const CONFERENCE_CODE = ${JSON.stringify(code || '')};
+      const API_BASE = '/organizer-api/' + CONFERENCE_CODE + '?key=' + API_KEY + '&telegramId=' + TELEGRAM_ID;
+
+      function exportCSV(type) {
+        window.location.href = API_BASE.replace('/organizer-api/' + CONFERENCE_CODE, '/organizer-api/' + CONFERENCE_CODE + '/export/' + type);
+      }
+    </script>
   </head>
   <body>
     <div class="container">
@@ -447,6 +615,55 @@ router.get('/organizer-dashboard/:code', async (req, res) => {
           <span class="stat-label" style="color: #7c2d12; font-weight: 600;">📊 Текущий показатель: ${report.onboarding.completionRate}% (цель: ≥80%)</span>
         </div>
         `}
+      </div>
+
+      <div class="section">
+        <h2>📥 Экспорт данных</h2>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+          <button class="btn" onclick="exportCSV('participants')">📥 Экспорт участников (CSV)</button>
+          <button class="btn" onclick="exportCSV('questions')">📥 Экспорт вопросов (CSV)</button>
+          <button class="btn" onclick="exportCSV('polls')">📥 Экспорт опросов (CSV)</button>
+          <button class="btn" onclick="exportCSV('meetings')">📥 Экспорт встреч (CSV)</button>
+        </div>
+        <div style="margin-top: 16px;">
+          <a href="/organizer-admin/${code}?key=${encodeURIComponent(providedKey)}&telegramId=${telegramId}" class="btn btn-success">🔧 Перейти к управлению конференцией</a>
+        </div>
+      </div>
+
+      <!-- Create Poll Modal -->
+      <div id="create-poll-modal" class="modal">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>Создать опрос</h2>
+            <button class="close-btn" onclick="hideCreatePollModal()">&times;</button>
+          </div>
+          <form id="poll-form" onsubmit="createPoll(event)">
+            <div class="form-group">
+              <label>Вопрос:</label>
+              <input type="text" name="question" required />
+            </div>
+            <div class="form-group">
+              <label>Вариант ответа 1:</label>
+              <input type="text" name="option1" required />
+            </div>
+            <div class="form-group">
+              <label>Вариант ответа 2:</label>
+              <input type="text" name="option2" required />
+            </div>
+            <div class="form-group">
+              <label>Вариант ответа 3 (необязательно):</label>
+              <input type="text" name="option3" />
+            </div>
+            <div class="form-group">
+              <label>Вариант ответа 4 (необязательно):</label>
+              <input type="text" name="option4" />
+            </div>
+            <div class="action-buttons">
+              <button type="submit" class="btn btn-success">Создать опрос</button>
+              <button type="button" class="btn btn-secondary" onclick="hideCreatePollModal()">Отмена</button>
+            </div>
+          </form>
+        </div>
       </div>
 
       <div class="footer">

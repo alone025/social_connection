@@ -16,7 +16,7 @@ function getSecondScreenUrl(conferenceCode) {
 }
 
 /**
- * Generate organizer dashboard URL for a conference
+ * Generate organizer dashboard URL for a conference (reports only)
  */
 function getOrganizerDashboardUrl(conferenceCode, telegramId) {
   const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
@@ -25,6 +25,18 @@ function getOrganizerDashboardUrl(conferenceCode, telegramId) {
     return null; // Can't generate URL without API key or telegram ID
   }
   return `${baseUrl}/organizer-dashboard/${conferenceCode}?key=${encodeURIComponent(apiKey)}&telegramId=${telegramId}`;
+}
+
+/**
+ * Generate organizer admin panel URL for a conference (management interface)
+ */
+function getOrganizerAdminUrl(conferenceCode, telegramId) {
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
+  const apiKey = process.env.SECOND_SCREEN_API_KEY;
+  if (!apiKey || !telegramId) {
+    return null; // Can't generate URL without API key or telegram ID
+  }
+  return `${baseUrl}/organizer-admin/${conferenceCode}?key=${encodeURIComponent(apiKey)}&telegramId=${telegramId}`;
 }
 
 /**
@@ -140,6 +152,7 @@ function getSpeakerMenu() {
 function getConferenceAdminMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📋 Управление конференциями', 'menu:admin_conferences')],
+    [Markup.button.callback('🌐 Админ-панель (веб)', 'menu:admin_dashboard')],
     [Markup.button.callback('👥 Участники', 'menu:admin_participants')],
     [Markup.button.callback('❓ Модерация вопросов', 'menu:admin_moderate_questions')],
     [Markup.button.callback('📊 Управление опросами', 'menu:admin_polls')],
@@ -503,6 +516,7 @@ module.exports = {
   getPollNotificationMenu,
   getSecondScreenUrl,
   getOrganizerDashboardUrl,
+  getOrganizerAdminUrl,
   getMeetingMenu,
   getMeetingListMenu,
   getMeetingDetailsMenu,

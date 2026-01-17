@@ -8,12 +8,38 @@ const { ensureUserFromTelegram } = require('./conference.service');
  * Request a 1:1 meeting with another participant
  */
 async function requestMeeting({ telegramUser, conferenceCode, recipientProfileId, proposedTime, durationMinutes = 30, message = '' }) {
+  const { canCreateMeeting, canUserCreateMeeting } = require('./limit.service');
+  
   const user = await ensureUserFromTelegram(telegramUser);
   const conferenceId = await getConferenceIdByCode(conferenceCode);
   
   const conference = await Conference.findById(conferenceId);
   if (!conference) {
     throw new Error('CONFERENCE_NOT_FOUND');
+  }
+
+  // Check conference-level meeting limit
+  const conferenceLimitCheck = await canCreateMeeting(conferenceId);
+  if (!conferenceLimitCheck.allowed) {
+    const err = new Error('MEETING_LIMIT_EXCEEDED');
+    err.details = {
+      limit: conferenceLimitCheck.limit,
+      current: conferenceLimitCheck.current,
+      reason: 'Conference meeting limit exceeded',
+    };
+    throw err;
+  }
+
+  // Check user-level meeting limit
+  const userLimitCheck = await canUserCreateMeeting(conferenceId, user.telegramId);
+  if (!userLimitCheck.allowed) {
+    const err = new Error('USER_MEETING_LIMIT_EXCEEDED');
+    err.details = {
+      limit: userLimitCheck.limit,
+      current: userLimitCheck.current,
+      reason: 'User meeting limit exceeded',
+    };
+    throw err;
   }
 
   // Get requester profile
