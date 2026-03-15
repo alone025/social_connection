@@ -40,6 +40,14 @@ function getOrganizerAdminUrl(conferenceCode, telegramId) {
 }
 
 /**
+ * Generate WebApp URL
+ */
+function getWebAppUrl() {
+  const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
+  return `${baseUrl}/app`;
+}
+
+/**
  * Get user's effective roles (global + per-conference)
  */
 async function getUserRoles(telegramUser) {
@@ -89,29 +97,12 @@ async function getMainMenu(telegramUser) {
   const roles = await getUserRoles(telegramUser);
   const buttons = [];
 
-  // User menu (always available)
-  buttons.push([Markup.button.callback('📋 Мои конференции', 'menu:my_conferences')]);
-  buttons.push([Markup.button.callback('➕ Присоединиться к конференции', 'menu:join_conference')]);
-  buttons.push([Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')]);
-  buttons.push([Markup.button.callback('👁️ Мой профиль', 'menu:view_profile')]);
-  buttons.push([Markup.button.callback('🔍 Найти участников', 'menu:find_participants')]);
-  buttons.push([Markup.button.callback('🤝 Встречи 1:1', 'menu:meetings')]);
-  buttons.push([Markup.button.callback('❓ Задать вопрос', 'menu:ask_question')]);
-  buttons.push([Markup.button.callback('📊 Опросы', 'menu:polls')]);
+  // Web App Launch (Primary Action)
+  buttons.push([Markup.button.webApp('🚀 Открыть приложение', getWebAppUrl())]);
 
-  // Speaker menu
-  if (roles.hasSpeakerRole) {
-    buttons.push([Markup.button.callback('🎤 Меню спикера', 'menu:speaker')]);
-  }
-
-  // Conference Admin menu
-  if (roles.isConferenceAdmin || roles.conferenceAdminFor.length > 0) {
-    buttons.push([Markup.button.callback('⚙️ Меню администратора', 'menu:conference_admin')]);
-  }
-
-  // Main Admin menu
-  if (roles.isMainAdmin) {
-    buttons.push([Markup.button.callback('👑 Меню главного админа', 'menu:main_admin')]);
+  // Admin Panels (if applicable)
+  if (roles.isMainAdmin || roles.isConferenceAdmin) {
+    buttons.push([Markup.button.callback('⚙️ Панель администратора', 'menu:conference_admin')]);
   }
 
   return Markup.inlineKeyboard(buttons);
@@ -122,6 +113,7 @@ async function getMainMenu(telegramUser) {
  */
 function getUserMenu() {
   return Markup.inlineKeyboard([
+    [Markup.button.webApp('🚀 Открыть приложение', getWebAppUrl())],
     [Markup.button.callback('📋 Мои конференции', 'menu:my_conferences')],
     [Markup.button.callback('➕ Присоединиться', 'menu:join_conference')],
     [Markup.button.callback('👤 Заполнить профиль', 'menu:onboarding')],

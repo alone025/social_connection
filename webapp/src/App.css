@@ -1,0 +1,197 @@
+/* Standard Form Inputs */
+.form-input {
+  width: 100%;
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  border: 1.5px solid #edf2f7;
+  background: #ffffff;
+  font-family: var(--font-main);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--primary-text);
+  outline: none;
+  transition: all 0.2s;
+}
+
+.form-input:focus {
+  border-color: var(--primary-solid);
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.05);
+}
+
+/* Premium Button Enhancements */
+.btn {
+  padding: 16px 24px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.btn-primary:active {
+  transform: scale(0.97) translateY(1px);
+}
+
+/* Header Dropdown */
+.profile-container {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 55px;
+  right: 0;
+  width: 220px;
+  background: #ffffff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm);
+  z-index: 1000;
+  box-shadow: 0 15px 45px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: slideInDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideInDown {
+  from { opacity: 0; transform: translateY(-10px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.dropdown-item {
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--tg-theme-text-color);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dropdown-item:hover {
+  background: var(--tg-theme-secondary-bg-color);
+}
+
+/* Fixed Navigation Bar Re-adjustment if needed */
+.nav-bar {
+  background: #ffffff;
+  border-top: none;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tg-theme-hint-color);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+}
+
+.nav-item.active {
+  color: var(--primary);
+  background: rgba(0, 136, 204, 0.08);
+}
+
+.nav-icon {
+  width: 24px;
+  height: 24px;
+}
+
+/* Floating Action Button */
+.fab {
+  position: fixed;
+  bottom: 95px;
+  right: 20px;
+  width: 60px;
+  height: 60px;
+  border-radius: 30px;
+  background: var(--primary-gradient);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 20px rgba(0, 136, 204, 0.3);
+  cursor: pointer;
+  border: none;
+  z-index: 999;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.fab:active {
+  transform: scale(0.9) rotate(45deg);
+}
+
+/* Notifications Drawer */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 2000;
+  animation: fadeIn 0.3s ease;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 85%;
+  max-width: 400px;
+  background: var(--tg-theme-bg-color);
+  z-index: 2001;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.1);
+  padding: var(--spacing-lg);
+  display: flex;
+  flex-direction: column;
+  animation: slideInRight 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-lg);
+}
+
+.close-btn {
+  background: var(--tg-theme-secondary-bg-color);
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* Icon Button Utility */
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tg-theme-secondary-bg-color);
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.icon-btn svg {
+  width: 24px;
+  height: 24px;
+}

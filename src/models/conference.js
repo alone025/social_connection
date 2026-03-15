@@ -19,6 +19,12 @@ const conferenceSchema = new Schema(
     admins: [{ type: Schema.Types.ObjectId, ref: 'UserProfile' }],
     currentSlideUrl: { type: String },
     currentSlideTitle: { type: String },
+    organizerTier: {
+      type: String,
+      enum: ['free', 'basic', 'premium'],
+      default: 'free',
+    },
+    brandingEnabled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

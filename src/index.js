@@ -8,7 +8,9 @@ const http = require('http');
 const express = require('express');
 const morgan = require('morgan');
 const cors = require('cors');
+const path = require('path');
 const { Server } = require('socket.io');
+const { twaApiRouter } = require('./twa-api/routes');
 
 const { validateEnvironment } = require('./lib/env-validation');
 
@@ -111,6 +113,15 @@ async function bootstrap() {
 
   // Organizer dashboard API (protected via ?key=...&telegramId=...)
   app.use('/organizer-api', organizerApiRouter);
+
+  // TWA API
+  app.use('/twa-api', twaApiRouter);
+
+  // Serve TWA frontend (built files)
+  app.use('/app', express.static(path.join(__dirname, '../webapp/dist')));
+  app.get('/app*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../webapp/dist/index.html'));
+  });
 
   // Protect all second-screen REST API endpoints
   app.use('/conference', requireSecondScreenKey, secondScreenRouter);

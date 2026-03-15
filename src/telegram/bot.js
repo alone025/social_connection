@@ -88,6 +88,10 @@ async function clearUserState(telegramId) {
 
 let botInstance;
 
+function getBotInstance() {
+  return botInstance;
+}
+
 /**
  * Safely edit message text, ignoring "message is not modified" errors
  */
@@ -3069,11 +3073,11 @@ function initBot() {
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-function getBot() {
+function getBotInstance() {
   return botInstance;
 }
 
 module.exports = {
   initBot,
-  getBot,
+  getBotInstance,
 };

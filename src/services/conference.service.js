@@ -220,6 +220,33 @@ async function endConference({ code, requestedByUser }) {
   conference.isEnded = true;
   await conference.save();
 
+  // Broadcast notification to all participants
+  try {
+    const { UserProfile } = require('../models/userProfile');
+    const profiles = await UserProfile.find({ conference: conference._id, isActive: true });
+    
+    // We need the bot instance to send messages
+    const { getBotInstance } = require('../telegram/bot');
+    const bot = getBotInstance();
+    
+    if (bot) {
+      const message = `🏁 Конференция "${conference.title}" завершена!\n\n` +
+                      `💎 Бесплатный доступ к контактам и чату будет открыт еще 2 часа.\n\n` +
+                      `После этого для доступа к материалам и связям потребуется подписка (249 ₽).`;
+      
+      // Send in batches to avoid rate limits
+      for (const profile of profiles) {
+        try {
+          await bot.telegram.sendMessage(profile.telegramId, message);
+        } catch (e) {
+          console.error(`Failed to send end-msg to ${profile.telegramId}`, e.message);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Broadcast Error:', err);
+  }
+
   return conference;
 }
 
