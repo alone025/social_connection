@@ -167,3 +167,5 @@ module.exports = {
   handleUpdateProfile,
   getParticipants,
 };
+  listUserChats,
+};

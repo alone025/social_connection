@@ -1,9 +1,5 @@
-const ConferenceMembersView = ({ requestStatus, onOpenChat, onViewProfile, onSendRequest }) => {
-  const members = [
-    { id: 1, name: 'Michal P.', role: 'Developer', company: 'Google', about: 'Senior Frontend Engineer @ Google. Passionate about React and performant web apps.' },
-    { id: 2, name: 'Anna K.', role: 'Founder', company: 'StartupX', about: 'Building the next generation of SaaS tools. Looking for AI experts.' },
-    { id: 3, name: 'David L.', role: 'Investor', company: 'VC Firm', about: 'Early-stage tech investor. Interested in Web3 and Fintech.' },
-  ];
+const ConferenceMembersView = ({ members = [], requestStatus, onOpenChat, onViewProfile, onSendRequest }) => {
+
 
   return (
     <div className="animate-fade-in" style={{ paddingBottom: '40px' }}>
@@ -16,11 +12,15 @@ const ConferenceMembersView = ({ requestStatus, onOpenChat, onViewProfile, onSen
               onClick={() => onViewProfile?.(m)}
             >
               <div style={{ width: '48px', height: '48px', borderRadius: '18px', background: 'var(--accent-blue)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1565c0', fontWeight: 700, fontSize: '18px' }}>
-                {m.name[0]}
+              {m.avatarUrl ? (
+                <img src={m.avatarUrl} style={{ width: '100%', height: '100%', borderRadius: '18px', objectFit: 'cover' }} alt={m.displayName} />
+              ) : (
+                <span style={{ fontWeight: 700, fontSize: '18px', color: '#1565c0' }}>{m.displayName?.[0] || m.name?.[0] || '?'}</span>
+              )}
               </div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: 'var(--primary)', fontSize: '15px' }}>{m.name}</div>
-                <div style={{ fontSize: '12px', color: '#a0aec0', fontWeight: 500 }}>{m.role} @ {m.company}</div>
+                <div style={{ fontWeight: 700, color: 'var(--primary)', fontSize: '15px' }}>{m.isRestricted ? `${m.displayName || m.name} ***` : (m.displayName || m.name)}</div>
+                <div style={{ fontSize: '12px', color: '#a0aec0', fontWeight: 500 }}>{m.role}{m.company ? ` @ ${m.company}` : ''}</div>
               </div>
             </div>
             

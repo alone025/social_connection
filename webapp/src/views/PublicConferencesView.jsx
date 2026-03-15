@@ -1,31 +1,11 @@
 import React, { useState } from 'react';
 import { RU as t } from '../constants/locales';
 
-const PublicConferencesView = ({ onBack, onJoinConference }) => {
+const PublicConferencesView = ({ onBack, onJoinConference, conferences = [] }) => {
   const [activeTab, setActiveTab] = useState('upcoming');
 
-  const upcomingConferences = [
-    {
-      id: 1,
-      name: 'Vooky Music App Weekly Sync With Developers',
-      date: '20 Мая',
-      day: 'Сегодня',
-      startingIn: '02 часа',
-      duration: '40 минут',
-      repeat: 'Еженедельно',
-      docs: '2 Документа',
-      participants: 7
-    }
-  ];
-
-  const pastConferences = [
-{ id: 2, name: 'Встреча с сотрудниками Оксфордского университета', date: 'Пятница, 24 апреля 2019 г.', time: '15:00', docs: '3 документа', participants: 5 },
-
-{ id: 3, name: 'Получайте обновления от разработчиков', date: 'Среда, 17 апреля 2019 г.', time: '14:00', docs: '2 документа', participants: 6 },
-
-{ id: 4, name: 'Синхронизация проектов с UI-дизайнерами', date: 'Четверг, 11 апреля 2019 г.', time: '16:30', docs: '-', participants: 4 },
-
-];
+  const upcomingConferences = conferences.filter(c => c.isActive !== false);
+  const pastConferences = conferences.filter(c => c.isActive === false);
 
   return (
     <div className="animate-fade-in">
@@ -86,7 +66,7 @@ const PublicConferencesView = ({ onBack, onJoinConference }) => {
                   </div>
                 </div>
                 
-                <button className="btn-solid" style={{ marginTop: '24px' }} onClick={() => onJoinConference(conf.id)}>
+                <button className="btn-solid" style={{ marginTop: '24px' }} onClick={() => onJoinConference(conf)}>
                   Присоединиться к сессии
                 </button>
               </div>

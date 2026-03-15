@@ -1,21 +1,14 @@
 import React, { useState } from 'react';
 import { RU as t } from '../constants/locales';
 
-const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile }) => {
+const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile, participants = [] }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
 
-  const participants = [
-    { id: 1, name: 'Elena Gilbert', role: 'Investor', interests: ['Web3', 'AI'], icon: '👤' },
-    { id: 2, name: 'Damon Salvatore', role: 'Speaker', interests: ['Energy', 'Tech'], icon: '🎤' },
-    { id: 3, name: 'Stefan Salvatore', role: 'Founder', interests: ['Health', 'Sustainability'], icon: '🌱' },
-    { id: 4, name: 'Bonnie Bennett', role: 'Developer', interests: ['Crypto', 'Security'], icon: '💻' },
-    { id: 5, name: 'Caroline Forbes', role: 'Organizer', interests: ['Marketing', 'Events'], icon: '📋' },
-  ];
-
-  const filtered = participants.filter(p => 
+  const filtered = participants.filter(p =>
     (filter === 'all' || p.role?.toLowerCase() === filter.toLowerCase()) &&
-    (p.name?.toLowerCase()?.includes(search.toLowerCase()) || p.interests?.some(i => i?.toLowerCase()?.includes(search.toLowerCase())))
+    ((p.displayName || p.name)?.toLowerCase()?.includes(search.toLowerCase()) ||
+      p.interests?.some(i => i?.toLowerCase()?.includes(search.toLowerCase())))
   );
 
   const isRestricted = accessPhase === 'payment_required';
@@ -74,29 +67,28 @@ const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile }) =
 
       <div className="participant-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {filtered.map(p => (
-          <div key={p.id} className="card-soft" style={{ display: 'flex', gap: '16px', alignItems: 'center', padding: '16px', opacity: isRestricted ? 0.6 : 1 }}>
-            <div 
-              style={{ display: 'flex', gap: '16px', alignItems: 'center', flex: 1, cursor: isRestricted ? 'default' : 'pointer' }}
-              onClick={() => !isRestricted && onViewProfile?.(p)}
+            <div
+              key={p.id}
+              className="card-soft animate-fade-in"
+              style={{ display: 'flex', gap: '16px', alignItems: 'center', padding: '20px', borderRadius: '24px', cursor: 'pointer' }}
+              onClick={() => !p.isRestricted && onViewProfile?.(p)}
             >
-              <div style={{ width: '48px', height: '48px', borderRadius: '16px', background: 'var(--accent-blue)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', fontWeight: 700, flexShrink: 0 }}>
-                {p.name[0]}
+              <div style={{ width: '54px', height: '54px', borderRadius: '18px', background: 'var(--accent-blue)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px', flexShrink: 0 }}>
+                {p.avatarUrl ? <img src={p.avatarUrl} style={{ width: '100%', height: '100%', borderRadius: '18px', objectFit: 'cover' }} alt={(p.displayName || p.name)} /> : '👤'}
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: 'var(--primary)', fontSize: '15px' }}>{isRestricted ? `${p.name?.split(' ')?.[0] || 'Member'} ...` : p.name}</div>
-                <div style={{ fontSize: '12px', color: '#a0aec0', fontWeight: 600, marginTop: '2px' }}>{p.role}</div>
-                <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
-                  {p.interests.map(i => <span key={i} style={{ fontSize: '10px', background: '#f7fafc', color: '#718096', padding: '3px 8px', borderRadius: '6px', fontWeight: 600 }}>{i}</span>)}
-                </div>
+              <div style={{ flex: 1, overflow: 'hidden' }}>
+                <div style={{ fontWeight: 700, color: 'var(--primary)', fontSize: '15px', marginBottom: '2px' }}>{p.displayName || p.name}</div>
+                <div style={{ fontSize: '12px', color: '#a0aec0', fontWeight: 600 }}>{p.role}{p.company ? ` • ${p.company}` : ''}</div>
+                {!p.isRestricted && p.interests?.length > 0 && (
+                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                    {p.interests.slice(0, 3).map(tag => (
+                      <span key={tag} style={{ fontSize: '11px', fontWeight: 700, background: 'var(--accent-blue)', color: '#1565c0', padding: '2px 8px', borderRadius: '6px' }}>{tag}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
-            {!isRestricted && (
-              <button className="btn-solid" style={{ width: 'auto', padding: '10px 20px', fontSize: '13px' }}>
-                {t.networking.meet_btn}
-              </button>
-            )}
-          </div>
-        ))}
+          ))}
       </div>
     </div>
   );
