@@ -5,7 +5,7 @@
  * Set VITE_API_URL in your .env to override the base URL in production.
  */
 
-const BASE_URL = '/api';
+const BASE_URL = 'https://social-connection-prja.onrender.com/api';
 
 class ApiClient {
   constructor() {
