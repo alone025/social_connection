@@ -166,6 +166,5 @@ module.exports = {
   getDashboardData,
   handleUpdateProfile,
   getParticipants,
-};
-  listUserChats,
+  // listUserChats,
 };

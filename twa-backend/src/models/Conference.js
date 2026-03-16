@@ -8,6 +8,12 @@ const conferenceSchema = new mongoose.Schema({
   startsAt: { type: Date },
   endsAt: { type: Date },
   location: { type: String },
+  coverImage: { type: String },
+  tags: [{ type: String }],
+  maxParticipants: { type: Number, default: 50 },
+  duration: { type: String }, // e.g. "2h 30m"
+  repeat: { type: String, default: 'None' }, // e.g. "Daily", "Weekly"
+  day: { type: String }, // e.g. "MON"
   isActive: { type: Boolean, default: true },
   // Grace period hours after conference ends (default 48h)
   gracePeriodHours: { type: Number, default: 48 },

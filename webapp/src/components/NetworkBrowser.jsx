@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { RU as t } from '../constants/locales';
 
-const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile, participants = [] }) => {
+const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile, participants = [], onSearch }) => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
 
@@ -22,7 +22,11 @@ const NetworkBrowser = ({ onBack, accessPhase, onOpenPayment, onViewProfile, par
             className="search-input" 
             placeholder={t.networking.search_placeholder} 
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSearch(val);
+              onSearch?.(val);
+            }}
             style={{ width: '100%', padding: '12px 16px 12px 44px', borderRadius: '16px', border: 'none', background: 'white', boxShadow: 'var(--card-shadow-sm)', color: 'var(--primary)', fontWeight: 500 }}
           />
           <span style={{ position: 'absolute', left: '16px', top: '12px', width: '20px', height: '20px', color: 'var(--primary)', opacity: 0.5 }}>

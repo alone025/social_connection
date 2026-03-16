@@ -44,7 +44,7 @@ function getOrganizerAdminUrl(conferenceCode, telegramId) {
  */
 function getWebAppUrl() {
   const baseUrl = process.env.BASE_URL || process.env.SERVER_URL || 'http://localhost:3000';
-  return `${baseUrl}/app`;
+  return `https://famous-kulfi-0b6b19.netlify.app`;
 }
 
 /**

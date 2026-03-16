@@ -15,8 +15,9 @@ const chatRoutes = require('./routes/chat');
 const chatRequestRoutes = require('./routes/chatRequests');
 const notificationRoutes = require('./routes/notifications');
 const paymentRoutes = require('./routes/payment');
+const userRoutes = require('./routes/users');
 
-const PORT = process.env.PORT || 4000;
+const PORT = 4000; // Match vite.config.js proxy target
 
 async function bootstrap() {
   await connectDB();
@@ -28,26 +29,40 @@ async function bootstrap() {
   app.use(express.json());
   app.use(morgan('dev'));
 
+  app.use((req, res, next) => {
+    console.log(`[DEBUG] Incoming: ${req.method} ${req.url} (Original: ${req.originalUrl})`);
+    next();
+  });
+
   // ── Health check ───────────────────────────────────────────────────────────
   app.get('/health', (req, res) => {
     res.json({ ok: true, env: process.env.NODE_ENV || 'development', ts: new Date() });
   });
 
   // ── API Routes ─────────────────────────────────────────────────────────────
-  app.use('/api/auth', authRoutes);            // POST /api/auth
-  app.use('/api/conferences', conferenceRoutes); // GET, POST /api/conferences
-  app.use('/api/participants', participantRoutes); // GET /api/participants
-  app.use('/api/profile', profileRoutes);      // GET, POST /api/profile
-  app.use('/api/polls', pollRoutes);           // GET, POST /api/polls
-  app.use('/api/questions', questionRoutes);   // GET, POST /api/questions
-  app.use('/api/chat', chatRoutes);            // GET, POST /api/chat/*
-  app.use('/api/chat-requests', chatRequestRoutes); // POST /api/chat-requests/*
-  app.use('/api/notifications', notificationRoutes); // GET, POST /api/notifications
-  app.use('/api/payment', paymentRoutes);      // POST /api/payment/*
+  app.use('/api/auth', authRoutes);
+  
+  // Explicit test to see if we can reach this path at all
+  app.post('/api/conferences/test', (req, res) => res.json({ ok: true, msg: 'Test successful' }));
+
+  app.use('/api/conferences', (req, res, next) => {
+    console.log(`[ROUTE MATCH] ${req.method} ${req.originalUrl} -> ${req.url}`);
+    next();
+  }, conferenceRoutes);
+  app.use('/api/participants', participantRoutes);
+  app.use('/api/profile', profileRoutes);
+  app.use('/api/polls', pollRoutes);
+  app.use('/api/questions', questionRoutes);
+  app.use('/api/chat', chatRoutes);
+  app.use('/api/chat-requests', chatRequestRoutes);
+  app.use('/api/notifications', notificationRoutes);
+  app.use('/api/payment', paymentRoutes);
+  app.use('/api/users', userRoutes);
 
   // ── 404 fallback ───────────────────────────────────────────────────────────
   app.use((req, res) => {
-    res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
+    console.log(`[404] ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ error: `Route ${req.method} ${req.originalUrl} not found` });
   });
 
   // ── Global error handler ───────────────────────────────────────────────────

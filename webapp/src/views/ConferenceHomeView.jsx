@@ -12,11 +12,17 @@ const ConferenceHomeView = ({ conference, onSeeAllQuestions, onSeeAllPolls, onVi
       <div className="card-soft" style={{ background: '#111111', color: 'white', padding: '24px', borderRadius: '24px', position: 'relative', overflow: 'hidden' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ width: '48px', height: '48px', borderRadius: '50%', border: '2px solid var(--accent-blue)', padding: '2px' }}>
-              <div style={{ width: '100%', height: '100%', borderRadius: '50%', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>👤</div>
+            <div style={{ width: '48px', height: '48px', borderRadius: '50%', border: '2px solid var(--accent-blue)', padding: '2px', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: '100%', borderRadius: '50%', background: '#333', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' }}>
+                {conference?.organizer?.avatarUrl ? (
+                  <img src={conference.organizer.avatarUrl} style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} alt="Host" />
+                ) : '👤'}
+              </div>
             </div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: '15px' }}>Jessica (Host)</div>
+              <div style={{ fontWeight: 700, fontSize: '15px' }}>
+                {conference?.organizer ? `${conference.organizer.firstName} ${conference.organizer.lastName || ''}`.trim() : 'Организатор'} (Host)
+              </div>
             </div>
           </div>
           <div style={{ background: '#ef4444', color: 'white', padding: '4px 10px', borderRadius: '12px', fontSize: '10px', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '4px' }}>

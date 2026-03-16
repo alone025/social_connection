@@ -8,6 +8,7 @@ import Header from './components/layout/Header';
 import MainNavigationBar from './components/layout/MainNavigationBar';
 import ConferenceNavigationBar from './components/layout/ConferenceNavigationBar';
 import NotificationsDrawer from './components/layout/NotificationsDrawer';
+import DebugConsole from './components/DebugConsole';
 
 // Main Views
 import HomeView from './views/HomeView';
@@ -15,6 +16,7 @@ import MessagingView from './views/MessagingView';
 import PublicConferencesView from './views/PublicConferencesView';
 import ProfileView from './views/ProfileView';
 import NetworkingView from './views/NetworkingView';
+import CreateConferenceView from './views/CreateConferenceView';
 
 // Conference Views
 import ConferenceHomeView from './views/ConferenceHomeView';
@@ -58,6 +60,7 @@ const App = () => {
   const [questions, setQuestions] = useState([]);
   const [chatList, setChatList] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
+  const [globalUsers, setGlobalUsers] = useState([]);
 
   // ── SVG Icons ─────────────────────────────────────────────────────────────
   const Icons = {
@@ -71,38 +74,8 @@ const App = () => {
     Plus: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
   };
 
-  // ── Bootstrap ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    if (tg) {
-      tg.ready();
-      tg.expand();
-      if (tg.colorScheme === 'dark') document.body.classList.add('dark');
-      api.init();
-      const initData = tg.initData;
-      if (initData) {
-        authenticate(initData);
-      } else {
-        // Development fallback — no Telegram context
-        setUser({ id: '12345', firstName: 'Dablo', lastName: 'User' });
-        setProfile({
-          firstName: 'Dablo', lastName: 'User', username: 'dablo_dev',
-          interests: ['AI', 'React'], bio: 'Frontend Developer.',
-          telegram: 'dablo_dev', whatsapp: '+79001234567',
-          about: 'Разрабатываю крутые интерфейсы', lookingFor: 'Интересные проекты',
-          company: 'Freelance', position: 'Senior Developer',
-          country: 'Россия', region: 'Московская область',
-          city: 'Москва', email: 'mail@mail.ru', phone: '+7 (999) 000-00-00',
-          onboardingCompleted: true,
-        });
-        fetchConferences();
-        setLoading(false);
-      }
-    }
-  }, []);
-
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  const authenticate = async (initData) => {
+  // ── Auth & Fetchers ────────────────────────────────────────────────────────
+  const authenticate = useCallback(async (initData) => {
     try {
       const data = await api.authenticate(initData);
       if (data.user) {
@@ -116,9 +89,8 @@ const App = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  // ── Conferences ───────────────────────────────────────────────────────────
   const fetchConferences = useCallback(async () => {
     try {
       const data = await api.getConferences();
@@ -128,35 +100,26 @@ const App = () => {
     }
   }, []);
 
-  const joinConference = async (conf) => {
-    // conf can be an existing object (from list) or just a code string
-    if (typeof conf === 'string') {
-      try {
-        const data = await api.joinConference(conf);
-        conf = data.conference;
-      } catch (err) {
-        console.error('Join error:', err);
-        // Fallback to local object so UI still navigates
-        conf = { id: Date.now(), name: `Conference ${conf}`, code: conf };
-      }
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const data = await api.getNotifications();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unreadCount || 0);
+    } catch (err) {
+      console.error('Fetch notifications error:', err);
     }
-    setActiveConference(conf);
-    setAccessPhase(conf.accessPhase || 'free');
-    setActiveTab('conf_home');
-    // Load conference data
-    loadConferenceData(conf.code);
-  };
+  }, []);
 
-  const leaveConference = () => {
-    setActiveConference(null);
-    setActiveTab('conferences');
-    setParticipants([]);
-    setPolls([]);
-    setQuestions([]);
-    setChatList([]);
-  };
+  const fetchGlobalUsers = useCallback(async (query = '') => {
+    try {
+      const data = await api.searchUsers(query);
+      setGlobalUsers(data.users || []);
+    } catch (err) {
+      console.error('Fetch global users error:', err);
+    }
+  }, []);
 
-  const loadConferenceData = async (code) => {
+  const loadConferenceData = useCallback(async (code) => {
     if (!code) return;
     try {
       const [partData, pollData, qData, chatData] = await Promise.allSettled([
@@ -172,9 +135,9 @@ const App = () => {
     } catch (err) {
       console.error('Load conference data error:', err);
     }
-  };
+  }, []);
 
-  // ── Profile ───────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
   const handleUpdateProfile = async (data) => {
     try {
       const result = await api.updateProfile({ ...data, onboardingCompleted: true });
@@ -185,7 +148,19 @@ const App = () => {
     }
   };
 
-  // ── Polls ─────────────────────────────────────────────────────────────────
+  const handleCreateConference = async (data) => {
+    try {
+      const result = await api.createConference(data);
+      if (result.success) {
+        await fetchConferences();
+        setActiveTab('conferences');
+      }
+    } catch (err) {
+      console.error('Create conference error:', err);
+      throw err;
+    }
+  };
+
   const handleVote = async (pollId, optionId) => {
     try {
       const result = await api.votePoll(pollId, optionId);
@@ -197,7 +172,6 @@ const App = () => {
     }
   };
 
-  // ── Questions ─────────────────────────────────────────────────────────────
   const handleAskQuestion = async (text) => {
     if (!activeConference?.code) return;
     try {
@@ -221,7 +195,6 @@ const App = () => {
     }
   };
 
-  // ── Chat ──────────────────────────────────────────────────────────────────
   const handleSelectChat = async (chat) => {
     setSelectedConfChat(chat);
     if (chat?.other?.id && activeConference?.code) {
@@ -234,18 +207,18 @@ const App = () => {
     }
   };
 
-  const handleSendMessage = async (text) => {
-    if (!selectedConfChat || !activeConference?.code) return;
+  const handleSendMessage = async (userId, text) => {
+    const targetUserId = userId || selectedConfChat?.other?.id;
+    if (!targetUserId || !activeConference?.code) return;
     try {
-      await api.sendMessage(selectedConfChat.other.id, activeConference.code, text);
-      const data = await api.getChatMessages(selectedConfChat.other.id, activeConference.code);
+      await api.sendMessage(targetUserId, activeConference.code, text);
+      const data = await api.getChatMessages(targetUserId, activeConference.code);
       setChatMessages(data.messages || []);
     } catch (err) {
       console.error('Send message error:', err);
     }
   };
 
-  // ── Chat Requests ─────────────────────────────────────────────────────────
   const handleSendChatRequest = async (member) => {
     if (!activeConference?.code) return;
     setRequestStatuses(prev => ({ ...prev, [member.id]: 'pending' }));
@@ -280,27 +253,75 @@ const App = () => {
     }
   };
 
-  // ── Notifications ─────────────────────────────────────────────────────────
-  const fetchNotifications = useCallback(async () => {
-    try {
-      const data = await api.getNotifications();
-      setNotifications(data.notifications || []);
-      setUnreadCount(data.unreadCount || 0);
-    } catch (err) {
-      console.error('Fetch notifications error:', err);
+  // ── Conference Navigation ─────────────────────────────────────────────────
+  const joinConference = async (conf) => {
+    if (typeof conf === 'string') {
+      try {
+        const data = await api.joinConference(conf);
+        conf = data.conference;
+      } catch (err) {
+        console.error('Join error:', err);
+        conf = { id: Date.now(), name: `Conference ${conf}`, code: conf };
+      }
     }
-  }, []);
+    setActiveConference(conf);
+    setAccessPhase(conf.accessPhase || 'free');
+    setActiveTab('conf_home');
+    loadConferenceData(conf.code);
+  };
+
+  const leaveConference = () => {
+    setActiveConference(null);
+    setActiveTab('conferences');
+    setParticipants([]);
+    setPolls([]);
+    setQuestions([]);
+    setChatList([]);
+  };
+
+  // ── Bootstrap ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      if (tg.colorScheme === 'dark') document.body.classList.add('dark');
+      api.init();
+      const initData = tg.initData;
+      if (initData) {
+        authenticate(initData);
+      } else {
+        setUser({ id: '12345', firstName: 'Dablo', lastName: 'User' });
+        setProfile({
+          firstName: 'Dablo', lastName: 'User', username: 'dablo_dev',
+          interests: ['AI', 'React'], bio: 'Frontend Developer.',
+          telegram: 'dablo_dev', whatsapp: '+79001234567',
+          about: 'Разрабатываю крутые интерфейсы', lookingFor: 'Интересные проекты',
+          company: 'Freelance', position: 'Senior Developer',
+          country: 'Россия', region: 'Московская область',
+          city: 'Москва', email: 'mail@mail.ru', phone: '+7 (999) 000-00-00',
+          onboardingCompleted: true,
+        });
+        fetchConferences();
+        setLoading(false);
+      }
+    }
+  }, [authenticate, fetchConferences]);
 
   useEffect(() => {
     if (user) {
       fetchNotifications();
-      // Poll for new notifications every 30 seconds
       const interval = setInterval(fetchNotifications, 30000);
       return () => clearInterval(interval);
     }
   }, [user, fetchNotifications]);
 
-  // ── Payment ───────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (activeTab === 'networking' && !activeConference) {
+      fetchGlobalUsers();
+    }
+  }, [activeTab, activeConference, fetchGlobalUsers]);
+
   const handleInitiatePayment = async () => {
     try {
       const data = await api.initiatePayment(activeConference?.code);
@@ -335,13 +356,14 @@ const App = () => {
 
         <div className="container">
           {/* ── Main Navigation Views ── */}
-          {['home', 'networking', 'messaging', 'conferences', 'profile'].includes(activeTab) && (
+          {['home', 'networking', 'messaging', 'conferences', 'profile', 'create_conference'].includes(activeTab) && (
             <>
               {activeTab === 'home' && (
                 <HomeView
                   user={user}
                   accessPhase={accessPhase}
                   conferences={conferences}
+                  polls={polls}
                   onJoin={() => setActiveTab('conferences')}
                   onPolls={() => setActiveTab('conferences')}
                 />
@@ -352,7 +374,8 @@ const App = () => {
                   accessPhase={accessPhase}
                   onOpenPayment={() => setIsPaymentOpen(true)}
                   onViewProfile={(m) => { setSelectedMember(m); setIsMemberModalOpen(true); }}
-                  participants={participants}
+                  participants={activeConference ? participants : globalUsers}
+                  onSearch={(q) => activeConference ? null : fetchGlobalUsers(q)}
                 />
               )}
               {activeTab === 'messaging' && (
@@ -372,7 +395,14 @@ const App = () => {
                 <PublicConferencesView
                   onBack={() => setActiveTab('home')}
                   onJoinConference={joinConference}
+                  onCreateNew={() => setActiveTab('create_conference')}
                   conferences={conferences}
+                />
+              )}
+              {activeTab === 'create_conference' && (
+                <CreateConferenceView
+                  onBack={() => setActiveTab('conferences')}
+                  onCreate={handleCreateConference}
                 />
               )}
               {activeTab === 'profile' && profile?.onboardingCompleted && (
@@ -625,6 +655,7 @@ const App = () => {
           </>
         )
       }
+      <DebugConsole />
     </>
   );
 };
