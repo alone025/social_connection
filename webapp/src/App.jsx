@@ -285,7 +285,8 @@ const App = () => {
     if (tg) {
       tg.ready();
       tg.expand();
-      if (tg.colorScheme === 'dark') document.body.classList.add('dark');
+      // LIGHT THEME BY DEFAULT: Removed automatic dark mode toggle
+      // if (tg.colorScheme === 'dark') document.body.classList.add('dark');
       api.init();
       const initData = tg.initData;
       if (initData) {
@@ -411,7 +412,7 @@ const App = () => {
                   onEdit={() => setProfile({ ...profile, onboardingCompleted: false })}
                 />
               )}
-              {activeTab === 'profile' && !profile?.onboardingCompleted && !profile?.isIncomplete && (
+              {activeTab === 'profile' && !profile?.onboardingCompleted && (
                 <ProfileForm
                   profile={profile}
                   onSave={handleUpdateProfile}

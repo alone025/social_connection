@@ -96,9 +96,9 @@ body {
 
 /* Typography */
 h1 { font-family: var(--font-display); font-size: 32px; font-weight: 700; margin-bottom: var(--spacing-sm); letter-spacing: -0.02em; }
-h2 { font-family: var(--font-display); font-size: 24px; font-weight: 600; margin-bottom: var(--spacing-sm); }
-h3 { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin-bottom: var(--spacing-xs); }
-p { font-size: 14px; color: var(--tg-theme-hint-color); font-weight: 400; line-height: 1.6; }
+h2 { font-family: var(--font-display); font-size: 24px; font-weight: 600; margin-bottom: var(--spacing-sm); color: var(--primary); }
+h3 { font-family: var(--font-display); font-size: 18px; font-weight: 600; margin-bottom: var(--spacing-xs); color: var(--primary); }
+p { font-size: 14px; color: var(--secondary-text); font-weight: 400; line-height: 1.6; }
 
 /* Buttons */
 /* Buttons */

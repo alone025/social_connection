@@ -61,11 +61,11 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 /**
- * POST /
+ * POST /create
  * Body: { name, description, location, startsAt, endsAt, tags, maxParticipants, duration, repeat, day }
  * Creates a new conference.
  */
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/create', authMiddleware, async (req, res) => {
   try {
     const user = await User.findOne({ telegramId: req.user.telegramId });
     if (!user) return res.status(404).json({ error: 'User not found' });

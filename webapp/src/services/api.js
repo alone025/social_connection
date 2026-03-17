@@ -5,7 +5,7 @@
  * Set VITE_API_URL in your .env to override the base URL in production.
  */
 
-const BASE_URL = 'http://localhost:4000/api';
+const BASE_URL = 'https://social-connection-prja.onrender.com/api';
 
 class ApiClient {
   constructor() {
@@ -49,7 +49,7 @@ class ApiClient {
   }
 
   createConference(data) {
-    return this._request('POST', '/conferences', data);
+    return this._request('POST', '/conferences/create', data);
   }
 
   joinConference(conferenceCode) {
